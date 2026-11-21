@@ -3,7 +3,7 @@ const builtin = @import("builtin");
 
 fn diagnostic(comptime fmt: []const u8, args: anytype) void {
     if (builtin.is_test) return;
-    std.debug.print(fmt, args);
+    std.log.err(fmt, args);
 }
 
 /// One row of a compile-time CSV schema.
@@ -13,7 +13,8 @@ fn diagnostic(comptime fmt: []const u8, args: anytype) void {
 /// `short` is empty or one character. `long` is the `--name` and, with `-`
 /// turned into `_`, the result field. `type` is the value type (`?` makes it
 /// optional). `arity` is `0` (flag), `1`, `+` (one or more), or `*` (zero or
-/// more). Help text may contain commas; quote a field to keep a comma inside
+/// more). `+` and `*` take each argument that follows until the next option.
+/// Help text may contain commas; quote a field to keep a comma inside
 /// it, and double a quote to escape one.
 pub const ArgDef = struct {
     short: ?u8 = null,
@@ -299,6 +300,54 @@ fn BucketArray(comptime n: usize) type {
     return [n]std.ArrayList([]const u8);
 }
 
+fn looksLikeOption(arg: []const u8) bool {
+    return arg.len > 1 and arg[0] == '-';
+}
+
+/// For `+` and `*`, take `first` (an `=` or attached value) and then every
+/// argument that follows until the next option. `--` ends option parsing and
+/// the remaining tokens belong to this option, including names that start
+/// with `-`.
+fn takeMulti(
+    allocator: std.mem.Allocator,
+    result: anytype,
+    buckets: anytype,
+    comptime def: ArgDef,
+    comptime idx: usize,
+    argv: []const []const u8,
+    i: usize,
+    first: ?[]const u8,
+) !usize {
+    var count: usize = 0;
+    if (first) |value| {
+        try assign(allocator, result, buckets, def, idx, value);
+        count += 1;
+    }
+
+    var next = i + 1;
+    while (next < argv.len) {
+        const arg = argv[next];
+        if (std.mem.eql(u8, arg, "--")) {
+            next += 1;
+            while (next < argv.len) : (next += 1) {
+                try assign(allocator, result, buckets, def, idx, argv[next]);
+                count += 1;
+            }
+            break;
+        }
+        if (looksLikeOption(arg)) break;
+        try assign(allocator, result, buckets, def, idx, arg);
+        count += 1;
+        next += 1;
+    }
+
+    if (count == 0 and def.arity == .one_or_more) {
+        diagnostic("missing value for --{s}\n", .{def.long});
+        return error.MissingValue;
+    }
+    return next;
+}
+
 fn assign(
     allocator: std.mem.Allocator,
     result: anytype,
@@ -339,6 +388,8 @@ fn consumeLong(
                 }
                 @field(result, def.field_name) = true;
                 return i + 1;
+            } else if (comptime isMulti(def)) {
+                return try takeMulti(allocator, result, buckets, def, idx, argv, i, inline_val);
             } else {
                 const value = inline_val orelse blk: {
                     if (i + 1 >= argv.len) {
@@ -377,6 +428,9 @@ fn applyShort(
                 if (comptime def.arity == .flag) {
                     @field(result, def.field_name) = true;
                     return null;
+                } else if (comptime isMulti(def)) {
+                    const attached: ?[]const u8 = if (c + 1 < cluster.len) cluster[c + 1 ..] else null;
+                    return try takeMulti(allocator, result, buckets, def, idx, argv, i, attached);
                 } else if (c + 1 < cluster.len) {
                     try assign(allocator, result, buckets, def, idx, cluster[c + 1 ..]);
                     return i + 1;
@@ -448,7 +502,8 @@ fn finishMultis(
 /// Parse `argv` (`argv[0]` is the program name).
 ///
 /// String values point at `argv` and stay valid only as long as `argv` does.
-/// Repeated options (`+` and `*`) are owned slices: free them with `deinit`.
+/// `+` and `*` options take each argument that follows until the next option,
+/// and those slices are owned: free them with `deinit`.
 /// `-h` and `--help` return `error.Help` unless the schema defines that option.
 pub fn parse(
     comptime defs: []const ArgDef,
@@ -512,8 +567,8 @@ pub fn printHelp(comptime defs: []const ArgDef) void {
         const arity: []const u8 = switch (def.arity) {
             .flag => "",
             .one => " <value>",
-            .one_or_more => " <value>...",
-            .zero_or_more => " [value]...",
+            .one_or_more => " <value...>",
+            .zero_or_more => " [value...]",
         };
         if (def.short) |s| {
             if (def.long.len > 0) {
@@ -587,7 +642,6 @@ test "parse flags, strings, integers, and repeated options" {
         "out.txt",
         "-f",
         "a.txt",
-        "--file",
         "b.txt",
     });
     defer deinit(defs, allocator, args);
@@ -619,7 +673,6 @@ test "string values and attached short values" {
         "--dry-run",
         "--tag",
         "1",
-        "--tag",
         "2",
     });
     defer deinit(defs, allocator, args);
@@ -641,6 +694,52 @@ test "zero or more may be empty, and a string default is kept" {
     defer deinit(defs, allocator, args);
     try std.testing.expectEqualStrings("world", args.name);
     try std.testing.expectEqual(@as(usize, 0), args.tag.len);
+}
+
+test "multi options stop at the next option" {
+    const defs = example_defs;
+    const Result = makeResultType(defs);
+    const allocator = std.testing.allocator;
+    const args = try parse(defs, Result, allocator, &.{
+        "prog",
+        "-f",
+        "a.txt",
+        "b.txt",
+        "c.txt",
+        "--port",
+        "7",
+        "--output",
+        "out.txt",
+    });
+    defer deinit(defs, allocator, args);
+
+    try std.testing.expectEqual(@as(u16, 7), args.port);
+    try std.testing.expectEqualStrings("out.txt", args.output.?);
+    try std.testing.expectEqual(@as(usize, 3), args.file.len);
+    try std.testing.expectEqualStrings("a.txt", args.file[0]);
+    try std.testing.expectEqualStrings("b.txt", args.file[1]);
+    try std.testing.expectEqualStrings("c.txt", args.file[2]);
+
+    const dashed = try parse(defs, Result, allocator, &.{
+        "prog",
+        "--file",
+        "plain.txt",
+        "--",
+        "-odd.txt",
+    });
+    defer deinit(defs, allocator, dashed);
+    try std.testing.expectEqual(@as(usize, 2), dashed.file.len);
+    try std.testing.expectEqualStrings("plain.txt", dashed.file[0]);
+    try std.testing.expectEqualStrings("-odd.txt", dashed.file[1]);
+
+    const attached = try parse(defs, Result, allocator, &.{
+        "prog",
+        "--file=a.txt",
+        "b.txt",
+    });
+    defer deinit(defs, allocator, attached);
+    try std.testing.expectEqualStrings("a.txt", attached.file[0]);
+    try std.testing.expectEqualStrings("b.txt", attached.file[1]);
 }
 
 test "errors for unknown, missing, invalid, positional, and help" {
