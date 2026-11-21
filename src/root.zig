@@ -14,6 +14,13 @@ fn diagnostic(comptime fmt: []const u8, args: anytype) void {
 /// turned into `_`, the result field. `type` is the value type (`?` makes it
 /// optional). `arity` is `0` (flag), `1`, `+` (one or more), or `*` (zero or
 /// more). `+` and `*` take each argument that follows until the next option.
+///
+/// `default` is used when the option is omitted. On a `?` type, a blank cell
+/// or `null` is null. A non-optional type with a default is not required; a
+/// blank cell on a non-optional number or bool is required. A blank
+/// `[]const u8` is the empty string. For `+` and `*`, `default` is a
+/// comma-separated list (`a.txt,b.txt`); quote that cell when it contains a
+/// comma. `+` with no items is required. `*` with no items is an empty list.
 /// Help text may contain commas; quote a field to keep a comma inside
 /// it, and double a quote to escape one.
 pub const ArgDef = struct {
@@ -252,13 +259,86 @@ fn parseScalar(comptime T: type, s: []const u8) Error!T {
     }
 }
 
+fn isOptionalType(comptime def: ArgDef) bool {
+    return def.type_name.len > 0 and def.type_name[0] == '?';
+}
+
+/// Comma-separated items in a `+` or `*` default. Whitespace around each item
+/// is ignored, and empty items are dropped. A blank cell is an empty list.
+fn multiDefaultParts(comptime raw: []const u8) []const []const u8 {
+    if (raw.len == 0) return &.{};
+    const out = comptime blk: {
+        var count: usize = 1;
+        for (raw) |c| {
+            if (c == ',') count += 1;
+        }
+        var parts: [count][]const u8 = undefined;
+        var n: usize = 0;
+        var start: usize = 0;
+        for (raw, 0..) |c, i| {
+            if (c == ',') {
+                const piece = std.mem.trim(u8, raw[start..i], " \t");
+                if (piece.len > 0) {
+                    parts[n] = piece;
+                    n += 1;
+                }
+                start = i + 1;
+            }
+        }
+        const tail = std.mem.trim(u8, raw[start..], " \t");
+        if (tail.len > 0) {
+            parts[n] = tail;
+            n += 1;
+        }
+        const stored = parts[0..n].*;
+        break :blk stored;
+    };
+    return &out;
+}
+
+/// An option is required when omitting it would leave a non-optional value
+/// without a default. `+` is a count, not a required flag: it is required
+/// only when its default list is empty.
+fn isRequired(comptime def: ArgDef) bool {
+    if (def.arity == .flag or def.arity == .zero_or_more or isOptionalType(def)) return false;
+    if (def.arity == .one_or_more) return multiDefaultParts(def.default_str).len == 0;
+    if (std.mem.eql(u8, def.type_name, "[]const u8")) return false;
+    return def.default_str.len == 0;
+}
+
+fn emptyDefault(comptime T: type) T {
+    if (T == bool) return false;
+    if (T == []const u8) return "";
+    return switch (@typeInfo(T)) {
+        .int => 0,
+        .optional => null,
+        else => @compileError("unsupported value type " ++ @typeName(T)),
+    };
+}
+
 fn parseDefault(comptime def: ArgDef) resultFieldType(def) {
     const T = resultFieldType(def);
-    if (isMulti(def)) return @as(T, &.{});
+    if (isMulti(def)) {
+        const parts = multiDefaultParts(def.default_str);
+        if (parts.len == 0) return @as(T, &.{});
+        const Base = typeFromName(def.type_name);
+        var values: [parts.len]Base = undefined;
+        for (parts, 0..) |part, i| {
+            values[i] = parseScalar(Base, part) catch
+                @compileError("bad default for " ++ def.field_name ++ ": " ++ part);
+        }
+        const copy = values;
+        return &copy;
+    }
+    if (def.arity == .flag and def.default_str.len == 0) {
+        if (@typeInfo(T) == .optional) return null;
+        return false;
+    }
     if (@typeInfo(T) == .optional) {
         const s = def.default_str;
         if (s.len == 0 or std.mem.eql(u8, s, "null")) return null;
     }
+    if (isRequired(def)) return emptyDefault(T);
     return parseScalar(T, def.default_str) catch
         @compileError("bad default for " ++ def.field_name ++ ": " ++ def.default_str);
 }
@@ -312,6 +392,7 @@ fn takeMulti(
     allocator: std.mem.Allocator,
     result: anytype,
     buckets: anytype,
+    seen: []bool,
     comptime def: ArgDef,
     comptime idx: usize,
     argv: []const []const u8,
@@ -320,7 +401,7 @@ fn takeMulti(
 ) !usize {
     var count: usize = 0;
     if (first) |value| {
-        try assign(allocator, result, buckets, def, idx, value);
+        try assign(allocator, result, buckets, seen, def, idx, value);
         count += 1;
     }
 
@@ -330,13 +411,13 @@ fn takeMulti(
         if (std.mem.eql(u8, arg, "--")) {
             next += 1;
             while (next < argv.len) : (next += 1) {
-                try assign(allocator, result, buckets, def, idx, argv[next]);
+                try assign(allocator, result, buckets, seen, def, idx, argv[next]);
                 count += 1;
             }
             break;
         }
         if (looksLikeOption(arg)) break;
-        try assign(allocator, result, buckets, def, idx, arg);
+        try assign(allocator, result, buckets, seen, def, idx, arg);
         count += 1;
         next += 1;
     }
@@ -352,6 +433,7 @@ fn assign(
     allocator: std.mem.Allocator,
     result: anytype,
     buckets: anytype,
+    seen: []bool,
     comptime def: ArgDef,
     comptime idx: usize,
     value: []const u8,
@@ -364,6 +446,7 @@ fn assign(
         diagnostic("invalid value for --{s}: {s}\n", .{ def.long, value });
         return error.InvalidValue;
     };
+    seen[idx] = true;
 }
 
 fn consumeLong(
@@ -371,6 +454,7 @@ fn consumeLong(
     allocator: std.mem.Allocator,
     result: anytype,
     buckets: anytype,
+    seen: []bool,
     argv: []const []const u8,
     i: usize,
 ) !usize {
@@ -389,7 +473,7 @@ fn consumeLong(
                 @field(result, def.field_name) = true;
                 return i + 1;
             } else if (comptime isMulti(def)) {
-                return try takeMulti(allocator, result, buckets, def, idx, argv, i, inline_val);
+                return try takeMulti(allocator, result, buckets, seen, def, idx, argv, i, inline_val);
             } else {
                 const value = inline_val orelse blk: {
                     if (i + 1 >= argv.len) {
@@ -398,7 +482,7 @@ fn consumeLong(
                     }
                     break :blk argv[i + 1];
                 };
-                try assign(allocator, result, buckets, def, idx, value);
+                try assign(allocator, result, buckets, seen, def, idx, value);
                 return i + if (inline_val == null) @as(usize, 2) else 1;
             }
         }
@@ -416,6 +500,7 @@ fn applyShort(
     allocator: std.mem.Allocator,
     result: anytype,
     buckets: anytype,
+    seen: []bool,
     argv: []const []const u8,
     i: usize,
     cluster: []const u8,
@@ -430,15 +515,15 @@ fn applyShort(
                     return null;
                 } else if (comptime isMulti(def)) {
                     const attached: ?[]const u8 = if (c + 1 < cluster.len) cluster[c + 1 ..] else null;
-                    return try takeMulti(allocator, result, buckets, def, idx, argv, i, attached);
+                    return try takeMulti(allocator, result, buckets, seen, def, idx, argv, i, attached);
                 } else if (c + 1 < cluster.len) {
-                    try assign(allocator, result, buckets, def, idx, cluster[c + 1 ..]);
+                    try assign(allocator, result, buckets, seen, def, idx, cluster[c + 1 ..]);
                     return i + 1;
                 } else if (i + 1 >= argv.len) {
                     diagnostic("missing value for -{c}\n", .{ch});
                     return error.MissingValue;
                 } else {
-                    try assign(allocator, result, buckets, def, idx, argv[i + 1]);
+                    try assign(allocator, result, buckets, seen, def, idx, argv[i + 1]);
                     return i + 2;
                 }
             }
@@ -454,17 +539,27 @@ fn consumeShort(
     allocator: std.mem.Allocator,
     result: anytype,
     buckets: anytype,
+    seen: []bool,
     argv: []const []const u8,
     i: usize,
 ) !usize {
     const cluster = argv[i][1..];
     var c: usize = 0;
     while (c < cluster.len) {
-        if (try applyShort(defs, allocator, result, buckets, argv, i, cluster, c, cluster[c])) |next|
+        if (try applyShort(defs, allocator, result, buckets, seen, argv, i, cluster, c, cluster[c])) |next|
             return next;
         c += 1;
     }
     return i + 1;
+}
+
+fn reportMissing(comptime def: ArgDef) Error {
+    if (def.long.len > 0) {
+        diagnostic("missing argument --{s}\n", .{def.long});
+    } else {
+        diagnostic("missing argument -{c}\n", .{def.short.?});
+    }
+    return error.MissingArgument;
 }
 
 fn finishMultis(
@@ -472,18 +567,32 @@ fn finishMultis(
     allocator: std.mem.Allocator,
     result: anytype,
     buckets: anytype,
+    seen: []const bool,
 ) !void {
+    inline for (defs, 0..) |def, idx| {
+        if (comptime isRequired(def)) {
+            const provided = if (comptime isMulti(def)) buckets[idx].items.len != 0 else seen[idx];
+            if (!provided) return reportMissing(def);
+        }
+    }
+
     inline for (defs, 0..) |def, idx| {
         if (comptime isMulti(def)) {
             const raw = buckets[idx].items;
-            if (def.arity == .one_or_more and raw.len == 0) {
-                diagnostic("missing argument --{s}\n", .{def.long});
-                return error.MissingArgument;
-            }
             const Base = typeFromName(def.type_name);
             if (raw.len == 0) {
-                const empty: []const Base = &.{};
-                @field(result, def.field_name) = empty;
+                const parts = comptime multiDefaultParts(def.default_str);
+                if (parts.len != 0) {
+                    const out = try allocator.alloc(Base, parts.len);
+                    errdefer allocator.free(out);
+                    for (parts, 0..) |part, j| {
+                        out[j] = parseScalar(Base, part) catch {
+                            diagnostic("invalid value for --{s}: {s}\n", .{ def.long, part });
+                            return error.InvalidValue;
+                        };
+                    }
+                    @field(result, def.field_name) = out;
+                }
             } else {
                 const out = try allocator.alloc(Base, raw.len);
                 errdefer allocator.free(out);
@@ -502,8 +611,9 @@ fn finishMultis(
 /// Parse `argv` (`argv[0]` is the program name).
 ///
 /// String values point at `argv` and stay valid only as long as `argv` does.
-/// `+` and `*` options take each argument that follows until the next option,
-/// and those slices are owned: free them with `deinit`.
+/// `+` and `*` options take each argument that follows until the next option.
+/// Those slices are owned, including a copy of a schema default list: free
+/// them with `deinit`. An option is required when it has no default.
 /// `-h` and `--help` return `error.Help` unless the schema defines that option.
 pub fn parse(
     comptime defs: []const ArgDef,
@@ -515,6 +625,7 @@ pub fn parse(
     var buckets: BucketArray(defs.len) = undefined;
     for (&buckets) |*bucket| bucket.* = .empty;
     defer for (&buckets) |*bucket| bucket.deinit(allocator);
+    var seen: [defs.len]bool = @splat(false);
 
     var i: usize = 1;
     while (i < argv.len) {
@@ -528,24 +639,30 @@ pub fn parse(
             break;
         }
         if (std.mem.startsWith(u8, arg, "--")) {
-            i = try consumeLong(defs, allocator, &result, &buckets, argv, i);
+            i = try consumeLong(defs, allocator, &result, &buckets, &seen, argv, i);
         } else if (arg.len > 1 and arg[0] == '-') {
-            i = try consumeShort(defs, allocator, &result, &buckets, argv, i);
+            i = try consumeShort(defs, allocator, &result, &buckets, &seen, argv, i);
         } else {
             diagnostic("unexpected positional: {s}\n", .{arg});
             return error.UnexpectedPositional;
         }
     }
 
-    try finishMultis(defs, allocator, &result, &buckets);
+    try finishMultis(defs, allocator, &result, &buckets, &seen);
     return result;
 }
 
 /// Free slices owned by a result from `parse`. String bytes themselves are not
-/// copied, so only the repeated-option arrays are released.
+/// copied, so only the repeated-option arrays are released. Schema default
+/// lists are copied during `parse`; a bare `Result{}` still points at the
+/// template and must not be passed here.
 pub fn deinit(comptime defs: []const ArgDef, allocator: std.mem.Allocator, result: anytype) void {
     inline for (defs) |def| {
-        if (comptime isMulti(def)) allocator.free(@field(result, def.field_name));
+        if (comptime isMulti(def)) {
+            const slice = @field(result, def.field_name);
+            const preset = comptime parseDefault(def);
+            if (slice.ptr != preset.ptr) allocator.free(slice);
+        }
     }
 }
 
@@ -594,9 +711,18 @@ fn optionLabel(comptime def: ArgDef) []const u8 {
 }
 
 fn defaultLabel(comptime def: ArgDef) []const u8 {
-    if (def.arity == .one_or_more) return "required";
-    if (def.arity == .zero_or_more) return "none";
-    const optional = def.type_name.len > 0 and def.type_name[0] == '?';
+    if (isRequired(def)) return "required";
+    if (isMulti(def)) {
+        const joined = comptime blk: {
+            const parts = multiDefaultParts(def.default_str);
+            if (parts.len == 0) break :blk "none";
+            var text: []const u8 = parts[0];
+            for (parts[1..]) |part| text = text ++ ", " ++ part;
+            break :blk text;
+        };
+        return joined;
+    }
+    const optional = isOptionalType(def);
     const bare = if (optional) def.type_name[1..] else def.type_name;
     const s = def.default_str;
     if (std.mem.eql(u8, bare, "[]const u8")) {
@@ -624,7 +750,7 @@ fn usageSuffix(comptime defs: []const ArgDef) []const u8 {
         var rest = !schemaHasHelp(defs);
         var wrote = false;
         for (defs) |def| {
-            if (def.arity == .one_or_more) {
+            if (isRequired(def)) {
                 const atom = usageAtom(def);
                 text = if (wrote) text ++ " " ++ atom else atom;
                 wrote = true;
@@ -651,10 +777,10 @@ fn helpWidths(comptime defs: []const ArgDef) HelpWidths {
 
 /// Print a help table to stderr.
 ///
-/// `program` is `argv[0]`; only its file name is shown. `+` options are
-/// required: they appear in the usage line and again first, with `required`
-/// in the default column. Every other option shows the default it compiles
-/// to (`none` when that default is empty).
+/// `program` is `argv[0]`; only its file name is shown. Options with no
+/// default are required: they appear in the usage line and again first, with
+/// `required` in the default column. Every other option shows the default it
+/// compiles to (`none` for null or an empty list).
 pub fn printHelp(comptime defs: []const ArgDef, program: []const u8) void {
     const widths = comptime helpWidths(defs);
     const row_fmt = comptime std.fmt.comptimePrint(
@@ -677,12 +803,12 @@ pub fn printHelp(comptime defs: []const ArgDef, program: []const u8) void {
         var required = false;
         var rest = !schemaHasHelp(defs);
         for (defs) |def| {
-            if (def.arity == .one_or_more) required = true else rest = true;
+            if (isRequired(def)) required = true else rest = true;
         }
         break :blk .{ .required = required, .rest = rest };
     };
     inline for (defs) |def| {
-        if (comptime def.arity == .one_or_more) {
+        if (comptime isRequired(def)) {
             std.debug.print(row_fmt, .{
                 comptime optionLabel(def),
                 comptime defaultLabel(def),
@@ -692,7 +818,7 @@ pub fn printHelp(comptime defs: []const ArgDef, program: []const u8) void {
     }
     if (split.required and split.rest) std.debug.print("\n", .{});
     inline for (defs) |def| {
-        if (comptime def.arity != .one_or_more) {
+        if (comptime !isRequired(def)) {
             std.debug.print(row_fmt, .{
                 comptime optionLabel(def),
                 comptime defaultLabel(def),
@@ -920,6 +1046,65 @@ test "help labels show defaults and mark required options" {
     try std.testing.expectEqualStrings("-h, --help", optionLabel(with_help[0]));
     try std.testing.expectEqualStrings("false", defaultLabel(with_help[0]));
     try std.testing.expectEqualStrings("[options]", usageSuffix(with_help));
+}
+
+test "defaults decide required options, and + accepts a list" {
+    const defs = comptime parseCsv(
+        \\short,long,type,arity,default,help
+        \\p,port,u16,1,,Listen port
+        \\o,output,?[]const u8,1,,Optional output
+        \\n,name,?[]const u8,1,null,Also optional
+        \\c,count,i32,1,3,Count
+        \\f,file,[]const u8,+,"a.txt, b.txt",Input files
+        \\t,tag,u8,*,"1,2",Tags
+        \\e,extra,[]const u8,+,one,One default
+    );
+    try std.testing.expect(isRequired(defs[0]));
+    try std.testing.expect(!isRequired(defs[1]));
+    try std.testing.expect(!isRequired(defs[2]));
+    try std.testing.expect(!isRequired(defs[3]));
+    try std.testing.expect(!isRequired(defs[4]));
+    try std.testing.expect(!isRequired(defs[5]));
+    try std.testing.expect(!isRequired(defs[6]));
+    try std.testing.expectEqualStrings("required", defaultLabel(defs[0]));
+    try std.testing.expectEqualStrings("none", defaultLabel(defs[1]));
+    try std.testing.expectEqualStrings("none", defaultLabel(defs[2]));
+    try std.testing.expectEqualStrings("3", defaultLabel(defs[3]));
+    try std.testing.expectEqualStrings("a.txt, b.txt", defaultLabel(defs[4]));
+    try std.testing.expectEqualStrings("1, 2", defaultLabel(defs[5]));
+    try std.testing.expectEqualStrings("one", defaultLabel(defs[6]));
+    try std.testing.expectEqualStrings("-p <u16> [options]", usageSuffix(defs));
+
+    const Result = makeResultType(defs);
+    const allocator = std.testing.allocator;
+    try std.testing.expectError(error.MissingArgument, parse(defs, Result, allocator, &.{"prog"}));
+
+    const args = try parse(defs, Result, allocator, &.{ "prog", "--port", "9" });
+    defer deinit(defs, allocator, args);
+    try std.testing.expectEqual(@as(u16, 9), args.port);
+    try std.testing.expect(args.output == null);
+    try std.testing.expect(args.name == null);
+    try std.testing.expectEqual(@as(i32, 3), args.count);
+    try std.testing.expectEqual(@as(usize, 2), args.file.len);
+    try std.testing.expectEqualStrings("a.txt", args.file[0]);
+    try std.testing.expectEqualStrings("b.txt", args.file[1]);
+    try std.testing.expectEqualSlices(u8, &.{ 1, 2 }, args.tag);
+    try std.testing.expectEqualStrings("one", args.extra[0]);
+
+    const replaced = try parse(defs, Result, allocator, &.{
+        "prog",
+        "-p",
+        "4",
+        "-f",
+        "c.txt",
+        "d.txt",
+    });
+    defer deinit(defs, allocator, replaced);
+    try std.testing.expectEqual(@as(u16, 4), replaced.port);
+    try std.testing.expectEqual(@as(usize, 2), replaced.file.len);
+    try std.testing.expectEqualStrings("c.txt", replaced.file[0]);
+    try std.testing.expectEqualStrings("d.txt", replaced.file[1]);
+    try std.testing.expectEqualSlices(u8, &.{ 1, 2 }, replaced.tag);
 }
 
 test "a schema-defined -h is a normal flag" {
