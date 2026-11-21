@@ -1,33 +1,31 @@
-// ---------------------------------------------------------------------------
-// Example usage (in main.zig)
-// ---------------------------------------------------------------------------
-
 const std = @import("std");
 const zig_clap = @import("zig_clap");
 
-// const csv = @embedFile("args.csv");
-const csv =
-    \\short,long,type,arity,default,help
-    \\v,verbose,bool,0,false,Enable verbose output
-    \\b,backup,bool,0,false,Create a backup
-    \\p,port,u16,1,8080,Listen port
-    \\o,output,?[]const u8,1,null,Optional output file
-    \\f,file,[]const u8,+, ,One or more input files
-;
+// `args.csv` is the comptime template for the argument types.
+const defs = zig_clap.parseCsv(@embedFile("args.csv"));
+const Result = zig_clap.makeResultType(defs);
 
-pub const defs = zig_clap.parseCsv(csv);
-pub const Result = zig_clap.makeResultType(defs);
+pub fn main(init: std.process.Init) !void {
+    const gpa = init.gpa;
 
-// In main:
- pub fn main() !void {
-     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-     defer _ = gpa.deinit();
-     const allocator = gpa.allocator();
+    var argv_list: std.ArrayList([]const u8) = .empty;
+    defer argv_list.deinit(gpa);
 
-     const argv = try std.process.argsAlloc(allocator);
-     defer std.process.argsFree(allocator, argv);
+    // Argument text points into this iterator. On Windows the iterator owns
+    // that buffer, so it has to outlive `args`.
+    var iterator = try init.minimal.args.iterateAllocator(gpa);
+    defer iterator.deinit();
+    while (iterator.next()) |arg| try argv_list.append(gpa, arg);
 
-     const args = try zig_clap.parse(defs, Result, allocator, argv);
-     std.debug.print("port = {d}\n", .{args.port});
-     std.debug.print("verbose = {}\n", .{args.verbose});
- }
+    const args = zig_clap.parse(defs, Result, gpa, argv_list.items) catch |err| {
+        zig_clap.printHelp(defs);
+        std.process.exit(if (err == error.Help) 0 else 1);
+    };
+    defer zig_clap.deinit(defs, gpa, args);
+
+    std.debug.print("port = {d}\n", .{args.port});
+    std.debug.print("verbose = {}\n", .{args.verbose});
+    std.debug.print("backup = {}\n", .{args.backup});
+    if (args.output) |path| std.debug.print("output = {s}\n", .{path});
+    for (args.file) |path| std.debug.print("file = {s}\n", .{path});
+}

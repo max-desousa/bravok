@@ -1,0 +1,6 @@
+short,long,type,arity,default,help
+v,verbose,bool,0,false,Enable verbose output
+b,backup,bool,0,false,Create a backup
+p,port,u16,1,8080,Listen port
+o,output,?[]const u8,1,null,Optional output file
+f,file,[]const u8,+,,One or more input files
