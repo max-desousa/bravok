@@ -20,7 +20,9 @@ fn diagnostic(comptime fmt: []const u8, args: anytype) void {
 /// blank cell on a non-optional number or bool is required. A blank
 /// `[]const u8` is the empty string. For `+` and `*`, `default` is a
 /// comma-separated list (`a.txt,b.txt`); quote that cell when it contains a
-/// comma. `+` with no items is required. `*` with no items is an empty list.
+/// comma. A `?` on `+` or `*` makes the list optional: blank or `null` is
+/// null, and each item uses the inner type. `+` with no items is required.
+/// `*` with no items is an empty list, or null when the list is optional.
 /// Help text may contain commas; quote a field to keep a comma inside
 /// it, and double a quote to escape one.
 pub const ArgDef = struct {
@@ -236,10 +238,19 @@ fn isMulti(comptime def: ArgDef) bool {
     return def.arity == .one_or_more or def.arity == .zero_or_more;
 }
 
+fn multiElementType(comptime def: ArgDef) type {
+    const declared = typeFromName(def.type_name);
+    return switch (@typeInfo(declared)) {
+        .optional => |opt| opt.child,
+        else => declared,
+    };
+}
+
 fn resultFieldType(comptime def: ArgDef) type {
-    const base = typeFromName(def.type_name);
-    if (isMulti(def)) return []const base;
-    return base;
+    if (!isMulti(def)) return typeFromName(def.type_name);
+    const list = []const multiElementType(def);
+    if (isOptionalType(def)) return ?list;
+    return list;
 }
 
 fn parseScalar(comptime T: type, s: []const u8) Error!T {
@@ -296,12 +307,22 @@ fn multiDefaultParts(comptime raw: []const u8) []const []const u8 {
     return &out;
 }
 
+/// Items of a `+` or `*` default. On an optional list, a blank cell or `null`
+/// means the list itself is null, not a list of one null item.
+fn listedDefaults(comptime def: ArgDef) []const []const u8 {
+    if (isOptionalType(def)) {
+        const s = def.default_str;
+        if (s.len == 0 or std.mem.eql(u8, s, "null")) return &.{};
+    }
+    return multiDefaultParts(def.default_str);
+}
+
 /// An option is required when omitting it would leave a non-optional value
 /// without a default. `+` is a count, not a required flag: it is required
 /// only when its default list is empty.
 fn isRequired(comptime def: ArgDef) bool {
     if (def.arity == .flag or def.arity == .zero_or_more or isOptionalType(def)) return false;
-    if (def.arity == .one_or_more) return multiDefaultParts(def.default_str).len == 0;
+    if (def.arity == .one_or_more) return listedDefaults(def).len == 0;
     if (std.mem.eql(u8, def.type_name, "[]const u8")) return false;
     return def.default_str.len == 0;
 }
@@ -319,9 +340,12 @@ fn emptyDefault(comptime T: type) T {
 fn parseDefault(comptime def: ArgDef) resultFieldType(def) {
     const T = resultFieldType(def);
     if (isMulti(def)) {
-        const parts = multiDefaultParts(def.default_str);
-        if (parts.len == 0) return @as(T, &.{});
-        const Base = typeFromName(def.type_name);
+        const parts = listedDefaults(def);
+        const Base = multiElementType(def);
+        if (parts.len == 0) {
+            if (comptime isOptionalType(def)) return null;
+            return @as(T, &.{});
+        }
         var values: [parts.len]Base = undefined;
         for (parts, 0..) |part, i| {
             values[i] = parseScalar(Base, part) catch
@@ -399,6 +423,7 @@ fn takeMulti(
     i: usize,
     first: ?[]const u8,
 ) !usize {
+    seen[idx] = true;
     var count: usize = 0;
     if (first) |value| {
         try assign(allocator, result, buckets, seen, def, idx, value);
@@ -579,19 +604,23 @@ fn finishMultis(
     inline for (defs, 0..) |def, idx| {
         if (comptime isMulti(def)) {
             const raw = buckets[idx].items;
-            const Base = typeFromName(def.type_name);
+            const Base = multiElementType(def);
             if (raw.len == 0) {
-                const parts = comptime multiDefaultParts(def.default_str);
-                if (parts.len != 0) {
-                    const out = try allocator.alloc(Base, parts.len);
-                    errdefer allocator.free(out);
-                    for (parts, 0..) |part, j| {
-                        out[j] = parseScalar(Base, part) catch {
-                            diagnostic("invalid value for --{s}: {s}\n", .{ def.long, part });
-                            return error.InvalidValue;
-                        };
+                if (seen[idx]) {
+                    @field(result, def.field_name) = @as([]const Base, &.{});
+                } else {
+                    const parts = comptime listedDefaults(def);
+                    if (parts.len != 0) {
+                        const out = try allocator.alloc(Base, parts.len);
+                        errdefer allocator.free(out);
+                        for (parts, 0..) |part, j| {
+                            out[j] = parseScalar(Base, part) catch {
+                                diagnostic("invalid value for --{s}: {s}\n", .{ def.long, part });
+                                return error.InvalidValue;
+                            };
+                        }
+                        @field(result, def.field_name) = out;
                     }
-                    @field(result, def.field_name) = out;
                 }
             } else {
                 const out = try allocator.alloc(Base, raw.len);
@@ -659,9 +688,17 @@ pub fn parse(
 pub fn deinit(comptime defs: []const ArgDef, allocator: std.mem.Allocator, result: anytype) void {
     inline for (defs) |def| {
         if (comptime isMulti(def)) {
-            const slice = @field(result, def.field_name);
-            const preset = comptime parseDefault(def);
-            if (slice.ptr != preset.ptr) allocator.free(slice);
+            if (comptime isOptionalType(def)) {
+                const field = @field(result, def.field_name);
+                if (field) |slice| {
+                    const preset = comptime parseDefault(def);
+                    if (preset == null or slice.ptr != preset.?.ptr) allocator.free(slice);
+                }
+            } else {
+                const slice = @field(result, def.field_name);
+                const preset = comptime parseDefault(def);
+                if (slice.ptr != preset.ptr) allocator.free(slice);
+            }
         }
     }
 }
@@ -714,7 +751,7 @@ fn defaultLabel(comptime def: ArgDef) []const u8 {
     if (isRequired(def)) return "required";
     if (isMulti(def)) {
         const joined = comptime blk: {
-            const parts = multiDefaultParts(def.default_str);
+            const parts = listedDefaults(def);
             if (parts.len == 0) break :blk "none";
             var text: []const u8 = parts[0];
             for (parts[1..]) |part| text = text ++ ", " ++ part;
@@ -880,6 +917,7 @@ test "parse flags, strings, integers, and repeated options" {
         "--port=9000",
         "--output",
         "out.txt",
+        "also.txt",
         "-f",
         "a.txt",
         "b.txt",
@@ -889,7 +927,9 @@ test "parse flags, strings, integers, and repeated options" {
     try std.testing.expectEqual(true, args.verbose);
     try std.testing.expectEqual(true, args.backup);
     try std.testing.expectEqual(@as(u16, 9000), args.port);
-    try std.testing.expectEqualStrings("out.txt", args.output.?);
+    try std.testing.expectEqual(@as(usize, 2), args.output.?.len);
+    try std.testing.expectEqualStrings("out.txt", args.output.?[0]);
+    try std.testing.expectEqualStrings("also.txt", args.output.?[1]);
     try std.testing.expectEqual(@as(usize, 2), args.file.len);
     try std.testing.expectEqualStrings("a.txt", args.file[0]);
     try std.testing.expectEqualStrings("b.txt", args.file[1]);
@@ -954,7 +994,7 @@ test "multi options stop at the next option" {
     defer deinit(defs, allocator, args);
 
     try std.testing.expectEqual(@as(u16, 7), args.port);
-    try std.testing.expectEqualStrings("out.txt", args.output.?);
+    try std.testing.expectEqualStrings("out.txt", args.output.?[0]);
     try std.testing.expectEqual(@as(usize, 3), args.file.len);
     try std.testing.expectEqualStrings("a.txt", args.file[0]);
     try std.testing.expectEqualStrings("b.txt", args.file[1]);
@@ -968,6 +1008,7 @@ test "multi options stop at the next option" {
         "-odd.txt",
     });
     defer deinit(defs, allocator, dashed);
+    try std.testing.expect(dashed.output == null);
     try std.testing.expectEqual(@as(usize, 2), dashed.file.len);
     try std.testing.expectEqualStrings("plain.txt", dashed.file[0]);
     try std.testing.expectEqualStrings("-odd.txt", dashed.file[1]);
@@ -1003,12 +1044,12 @@ test "help labels show defaults and mark required options" {
     try std.testing.expectEqualStrings("false", defaultLabel(example_defs[1]));
     try std.testing.expectEqualStrings("-p, --port <u16>", optionLabel(example_defs[2]));
     try std.testing.expectEqualStrings("8080", defaultLabel(example_defs[2]));
-    try std.testing.expectEqualStrings("-o, --output <text>", optionLabel(example_defs[3]));
+    try std.testing.expectEqualStrings("-o, --output <text...>", optionLabel(example_defs[3]));
     try std.testing.expectEqualStrings("none", defaultLabel(example_defs[3]));
     try std.testing.expectEqualStrings("-f, --file <text...>", optionLabel(example_defs[4]));
     try std.testing.expectEqualStrings("required", defaultLabel(example_defs[4]));
     try std.testing.expectEqualStrings("-f <text...> [options]", usageSuffix(example_defs));
-    try std.testing.expectEqual(@as(usize, 20), helpWidths(example_defs).option);
+    try std.testing.expectEqual(@as(usize, 22), helpWidths(example_defs).option);
     try std.testing.expectEqual(@as(usize, 8), helpWidths(example_defs).default);
 
     const defs = comptime parseCsv(
@@ -1105,6 +1146,33 @@ test "defaults decide required options, and + accepts a list" {
     try std.testing.expectEqualStrings("c.txt", replaced.file[0]);
     try std.testing.expectEqualStrings("d.txt", replaced.file[1]);
     try std.testing.expectEqualSlices(u8, &.{ 1, 2 }, replaced.tag);
+}
+
+test "optional text is one value at arity 1 and a list at *" {
+    const allocator = std.testing.allocator;
+
+    const one = comptime parseCsv("o,output,?[]const u8,1,null,Output\n");
+    const One = makeResultType(one);
+    const single_missing = try parse(one, One, allocator, &.{"prog"});
+    defer deinit(one, allocator, single_missing);
+    try std.testing.expect(single_missing.output == null);
+    const single = try parse(one, One, allocator, &.{ "prog", "--output", "out.txt" });
+    defer deinit(one, allocator, single);
+    try std.testing.expectEqualStrings("out.txt", single.output.?);
+    try std.testing.expectEqualStrings("-o, --output <text>", optionLabel(one[0]));
+
+    const many = comptime parseCsv("o,output,?[]const u8,*,,Outputs\n");
+    const Many = makeResultType(many);
+    const list_missing = try parse(many, Many, allocator, &.{"prog"});
+    defer deinit(many, allocator, list_missing);
+    try std.testing.expect(list_missing.output == null);
+    const listed = try parse(many, Many, allocator, &.{ "prog", "-o", "a.txt", "b.txt" });
+    defer deinit(many, allocator, listed);
+    try std.testing.expectEqual(@as(usize, 2), listed.output.?.len);
+    try std.testing.expectEqualStrings("a.txt", listed.output.?[0]);
+    try std.testing.expectEqualStrings("b.txt", listed.output.?[1]);
+    try std.testing.expectEqualStrings("-o, --output <text...>", optionLabel(many[0]));
+    try std.testing.expectEqualStrings("none", defaultLabel(many[0]));
 }
 
 test "a schema-defined -h is a normal flag" {

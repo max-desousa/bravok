@@ -27,6 +27,8 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("port = {d}\n", .{args.port});
     std.debug.print("verbose = {}\n", .{args.verbose});
     std.debug.print("backup = {}\n", .{args.backup});
-    if (args.output) |path| std.debug.print("output = {s}\n", .{path});
+    if (args.output) |paths| {
+        for (paths) |path| std.debug.print("output = {s}\n", .{path});
+    }
     for (args.file) |path| std.debug.print("file = {s}\n", .{path});
 }
