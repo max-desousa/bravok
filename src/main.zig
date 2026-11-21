@@ -18,7 +18,8 @@ pub fn main(init: std.process.Init) !void {
     while (iterator.next()) |arg| try argv_list.append(gpa, arg);
 
     const args = zig_clap.parse(defs, Result, gpa, argv_list.items) catch |err| {
-        zig_clap.printHelp(defs);
+        const program = if (argv_list.items.len == 0) "" else argv_list.items[0];
+        zig_clap.printHelp(defs, program);
         std.process.exit(if (err == error.Help) 0 else 1);
     };
     defer zig_clap.deinit(defs, gpa, args);

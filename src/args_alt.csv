@@ -1,0 +1,7 @@
+short,long,type,arity,default,help
+a,alphabet,bool,0,false,Enable verbose output
+b,bookstore,bool,0,false,Create a backup
+c,cookie,u16,1,8080,Listen port
+d,dummy,?[]const u8,1,null,Optional output file
+e,edit,[]const u8,+,./,One or more input files
+f,failures,[]const u8,+,,One or more input files

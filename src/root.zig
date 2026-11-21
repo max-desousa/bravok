@@ -561,33 +561,147 @@ fn schemaHasHelp(comptime defs: []const ArgDef) bool {
     return false;
 }
 
-pub fn printHelp(comptime defs: []const ArgDef) void {
-    std.debug.print("Options:\n", .{});
-    inline for (defs) |def| {
-        const arity: []const u8 = switch (def.arity) {
-            .flag => "",
-            .one => " <value>",
-            .one_or_more => " <value...>",
-            .zero_or_more => " [value...]",
-        };
+/// Value word used in help. `[]const u8` reads as `text`; a leading `?` is dropped.
+fn typeWord(comptime type_name: []const u8) []const u8 {
+    if (std.mem.endsWith(u8, type_name, "[]const u8")) return "text";
+    if (type_name.len > 0 and type_name[0] == '?') return type_name[1..];
+    return type_name;
+}
+
+/// `""`, `" <text>"`, or `" <text...>"`.
+fn valueHint(comptime def: ArgDef) []const u8 {
+    const result = comptime blk: {
+        if (def.arity == .flag) break :blk "";
+        const word = typeWord(def.type_name);
+        if (def.arity == .one) break :blk " <" ++ word ++ ">";
+        break :blk " <" ++ word ++ "...>";
+    };
+    return result;
+}
+
+fn optionLabel(comptime def: ArgDef) []const u8 {
+    const result = comptime blk: {
+        const hint = valueHint(def);
         if (def.short) |s| {
-            if (def.long.len > 0) {
-                std.debug.print("  -{c}, --{s}{s}  ({s})\n      {s}\n", .{
-                    s, def.long, arity, def.type_name, def.help,
-                });
-            } else {
-                std.debug.print("  -{c}{s}  ({s})\n      {s}\n", .{
-                    s, arity, def.type_name, def.help,
-                });
-            }
-        } else {
-            std.debug.print("      --{s}{s}  ({s})\n      {s}\n", .{
-                def.long, arity, def.type_name, def.help,
+            const flag = &[2]u8{ '-', s };
+            if (def.long.len > 0) break :blk flag ++ ", --" ++ def.long ++ hint;
+            break :blk flag ++ hint;
+        }
+        // Four spaces so `--` lines up with `-x, --name`.
+        break :blk "    --" ++ def.long ++ hint;
+    };
+    return result;
+}
+
+fn defaultLabel(comptime def: ArgDef) []const u8 {
+    if (def.arity == .one_or_more) return "required";
+    if (def.arity == .zero_or_more) return "none";
+    const optional = def.type_name.len > 0 and def.type_name[0] == '?';
+    const bare = if (optional) def.type_name[1..] else def.type_name;
+    const s = def.default_str;
+    if (std.mem.eql(u8, bare, "[]const u8")) {
+        if (optional and (s.len == 0 or std.mem.eql(u8, s, "null"))) return "none";
+        if (s.len == 0) return "\"\"";
+        return s;
+    }
+    if (s.len == 0 or std.mem.eql(u8, s, "null")) return "none";
+    return s;
+}
+
+fn usageAtom(comptime def: ArgDef) []const u8 {
+    const result = comptime blk: {
+        const hint = valueHint(def);
+        if (def.short) |s| break :blk &[2]u8{ '-', s } ++ hint;
+        break :blk "--" ++ def.long ++ hint;
+    };
+    return result;
+}
+
+/// Required options, then `[options]` when anything is optional (including built-in help).
+fn usageSuffix(comptime defs: []const ArgDef) []const u8 {
+    const out = comptime blk: {
+        var text: []const u8 = "";
+        var rest = !schemaHasHelp(defs);
+        var wrote = false;
+        for (defs) |def| {
+            if (def.arity == .one_or_more) {
+                const atom = usageAtom(def);
+                text = if (wrote) text ++ " " ++ atom else atom;
+                wrote = true;
+            } else rest = true;
+        }
+        if (rest) text = if (wrote) text ++ " [options]" else text ++ "[options]";
+        break :blk text;
+    };
+    return out;
+}
+
+const HelpWidths = struct { option: usize, default: usize };
+
+fn helpWidths(comptime defs: []const ArgDef) HelpWidths {
+    var option: usize = "option".len;
+    var default: usize = "default".len;
+    inline for (defs) |def| {
+        option = @max(option, optionLabel(def).len);
+        default = @max(default, defaultLabel(def).len);
+    }
+    if (!schemaHasHelp(defs)) option = @max(option, "-h, --help".len);
+    return .{ .option = option, .default = default };
+}
+
+/// Print a help table to stderr.
+///
+/// `program` is `argv[0]`; only its file name is shown. `+` options are
+/// required: they appear in the usage line and again first, with `required`
+/// in the default column. Every other option shows the default it compiles
+/// to (`none` when that default is empty).
+pub fn printHelp(comptime defs: []const ArgDef, program: []const u8) void {
+    const widths = comptime helpWidths(defs);
+    const row_fmt = comptime std.fmt.comptimePrint(
+        "  {{s: <{d}}}   {{s: <{d}}}   {{s}}\n",
+        .{ widths.option, widths.default },
+    );
+    const suffix = comptime usageSuffix(defs);
+    const base = std.fs.path.basename(program);
+    const name = if (base.len == 0) "program" else base;
+
+    std.debug.print("Usage\n", .{});
+    if (suffix.len == 0) {
+        std.debug.print("  {s}\n\n", .{name});
+    } else {
+        std.debug.print("  {s} {s}\n\n", .{ name, suffix });
+    }
+    std.debug.print(row_fmt, .{ "option", "default", "description" });
+
+    const split = comptime blk: {
+        var required = false;
+        var rest = !schemaHasHelp(defs);
+        for (defs) |def| {
+            if (def.arity == .one_or_more) required = true else rest = true;
+        }
+        break :blk .{ .required = required, .rest = rest };
+    };
+    inline for (defs) |def| {
+        if (comptime def.arity == .one_or_more) {
+            std.debug.print(row_fmt, .{
+                comptime optionLabel(def),
+                comptime defaultLabel(def),
+                def.help,
+            });
+        }
+    }
+    if (split.required and split.rest) std.debug.print("\n", .{});
+    inline for (defs) |def| {
+        if (comptime def.arity != .one_or_more) {
+            std.debug.print(row_fmt, .{
+                comptime optionLabel(def),
+                comptime defaultLabel(def),
+                def.help,
             });
         }
     }
     if (comptime !schemaHasHelp(defs)) {
-        std.debug.print("  -h, --help\n      Show this help\n", .{});
+        std.debug.print(row_fmt, .{ "-h, --help", "", "Show this help" });
     }
 }
 
@@ -754,6 +868,58 @@ test "errors for unknown, missing, invalid, positional, and help" {
     try std.testing.expectError(error.Help, parse(defs, Result, allocator, &.{ "prog", "--help" }));
     try std.testing.expectError(error.Help, parse(defs, Result, allocator, &.{ "prog", "-h" }));
     try std.testing.expectError(error.UnexpectedValue, parse(defs, Result, allocator, &.{ "prog", "--verbose=true" }));
+}
+
+test "help labels show defaults and mark required options" {
+    try std.testing.expectEqualStrings("-v, --verbose", optionLabel(example_defs[0]));
+    try std.testing.expectEqualStrings("false", defaultLabel(example_defs[0]));
+    try std.testing.expectEqualStrings("-b, --backup", optionLabel(example_defs[1]));
+    try std.testing.expectEqualStrings("false", defaultLabel(example_defs[1]));
+    try std.testing.expectEqualStrings("-p, --port <u16>", optionLabel(example_defs[2]));
+    try std.testing.expectEqualStrings("8080", defaultLabel(example_defs[2]));
+    try std.testing.expectEqualStrings("-o, --output <text>", optionLabel(example_defs[3]));
+    try std.testing.expectEqualStrings("none", defaultLabel(example_defs[3]));
+    try std.testing.expectEqualStrings("-f, --file <text...>", optionLabel(example_defs[4]));
+    try std.testing.expectEqualStrings("required", defaultLabel(example_defs[4]));
+    try std.testing.expectEqualStrings("-f <text...> [options]", usageSuffix(example_defs));
+    try std.testing.expectEqual(@as(usize, 20), helpWidths(example_defs).option);
+    try std.testing.expectEqual(@as(usize, 8), helpWidths(example_defs).default);
+
+    const defs = comptime parseCsv(
+        \\short,long,type,arity,default,help
+        \\n,name,[]const u8,1,world,Name
+        \\,dry-run,bool,0,false,Do not write
+        \\t,tag,u8,*,,Tags
+        \\x,,i32,1,-1,Short only
+        \\e,empty,[]const u8,1,,Empty text
+        \\o,output,?[]const u8,1,out.txt,Output
+        \\p,port,?u16,1,null,Optional port
+        \\q,quiet,bool,0,true,Start quiet
+        \\f,file,[]const u8,+,,Files
+        \\,also,[]const u8,+,,More files
+    );
+    try std.testing.expectEqualStrings("-n, --name <text>", optionLabel(defs[0]));
+    try std.testing.expectEqualStrings("world", defaultLabel(defs[0]));
+    try std.testing.expectEqualStrings("    --dry-run", optionLabel(defs[1]));
+    try std.testing.expectEqualStrings("-t, --tag <u8...>", optionLabel(defs[2]));
+    try std.testing.expectEqualStrings("none", defaultLabel(defs[2]));
+    try std.testing.expectEqualStrings("-x <i32>", optionLabel(defs[3]));
+    try std.testing.expectEqualStrings("-1", defaultLabel(defs[3]));
+    try std.testing.expectEqualStrings("\"\"", defaultLabel(defs[4]));
+    try std.testing.expectEqualStrings("out.txt", defaultLabel(defs[5]));
+    try std.testing.expectEqualStrings("-p, --port <u16>", optionLabel(defs[6]));
+    try std.testing.expectEqualStrings("none", defaultLabel(defs[6]));
+    try std.testing.expectEqualStrings("true", defaultLabel(defs[7]));
+    try std.testing.expectEqualStrings("-f <text...> --also <text...> [options]", usageSuffix(defs));
+
+    const optional_only = comptime parseCsv("v,verbose,bool,0,false,Loud\n");
+    try std.testing.expectEqualStrings("[options]", usageSuffix(optional_only));
+
+    const with_help = comptime parseCsv("h,help,bool,0,false,Show this help\n");
+    try std.testing.expect(schemaHasHelp(with_help));
+    try std.testing.expectEqualStrings("-h, --help", optionLabel(with_help[0]));
+    try std.testing.expectEqualStrings("false", defaultLabel(with_help[0]));
+    try std.testing.expectEqualStrings("[options]", usageSuffix(with_help));
 }
 
 test "a schema-defined -h is a normal flag" {
