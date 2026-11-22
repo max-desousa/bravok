@@ -1,0 +1,6 @@
+# `path` is the child directory. A blank path uses the long name.
+# `default` selects that command when the word is omitted.
+long,path,default,help
+add,,,Add files to the project
+serve,,,Listen for requests
+remote,,,Work with a remote

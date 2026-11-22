@@ -1,0 +1,3 @@
+long,path,default,help
+push,,,Send files to the remote
+pull,,,Update from the remote

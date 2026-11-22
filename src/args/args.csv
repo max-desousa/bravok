@@ -1,0 +1,3 @@
+# Options on this row apply before the command word.
+short,long,type,arity,default,help
+v,verbose,bool,0,false,Enable verbose output

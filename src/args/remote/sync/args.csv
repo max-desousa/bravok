@@ -1,0 +1,2 @@
+short,long,type,arity,default,help
+f,force,bool,0,false,Override the remote state
