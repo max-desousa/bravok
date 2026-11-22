@@ -932,8 +932,9 @@ pub const max_command_depth = 64;
 const max_segment_len = 255;
 const max_schema_path = 4096;
 
-/// Schema root. A program keeps its CSVs in `args/` next to the file that
-/// defines `embed`. There is no other location.
+/// Prefix passed to `embed`. The package build maps the `args` option onto
+/// this prefix, so the directory the user points at contains `args.csv`
+/// directly. Its own folder name is not part of the layout.
 const command_root = "args/";
 
 /// One row of a `sub.csv`. `path` is the directory under the parent; a blank
@@ -1176,12 +1177,11 @@ fn commandTypeDepth(comptime embed: anytype, comptime dir: []const u8, comptime 
     return makeLevelStruct(defs, Command, blankCommand(Command, subs[0].field_name));
 }
 
-/// Result type for the `args/` tree next to `embed`.
+/// Result type for the schema `embed` loads.
 ///
-/// `embed` reads schema files and is defined next to them:
-/// `fn embed(comptime path: []const u8) []const u8 { return @embedFile(path); }`
-///
-/// `args/args.csv` lists options and `args/sub.csv` lists commands. A command
+/// The module exported by this package calls this with the directory given by
+/// the `args` build option. `embed` is asked for `args/args.csv`,
+/// `args/sub.csv`, and one pair of files per command directory. A command
 /// row's `path` cell is the child directory; a blank cell uses the long name.
 /// `add` with path `a`, then `recursive` with path `r`, loads
 /// `args/a/r/args.csv` and `args/a/r/sub.csv`. An empty `sub.csv` is a leaf

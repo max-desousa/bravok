@@ -1,21 +1,19 @@
 const std = @import("std");
 const zig_clap = @import("zig_clap");
 
-// Schema files live in args/ next to this source file.
+// The schema directory is the `args` option in build.zig. This demo uses
+// src/args. The folder name is free; these names inside it are fixed.
 //
-// args/                         -v
-//   add/                        -f files, -o outputs, -b
-//   serve/                      -p port, -o log
-//   remote/                     --name
-//     list/                     --only
-//     sync/                     --force
-//       push/                   -f files, -t
-//       pull/                   --branch
-fn embed(comptime path: []const u8) []const u8 {
-    return @embedFile(path);
-}
-
-const Result = zig_clap.commandType(embed);
+// args.csv                      -v
+// sub.csv                       add, serve, remote
+// add/                          -f files, -o outputs, -b
+// serve/                        -p port, -o log
+// remote/                       --name
+//   list/                       --only
+//   sync/                       --force
+//     push/                     -f files, -t
+//     pull/                     --branch
+const Result = zig_clap.commandType();
 
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
@@ -30,8 +28,8 @@ pub fn main(init: std.process.Init) !void {
     while (iterator.next()) |arg| try argv_list.append(gpa, arg);
 
     // A usage error prints help and exits. `try` only surfaces out of memory.
-    const args: Result = try zig_clap.parse(embed, gpa, argv_list.items);
-    defer zig_clap.deinit(embed, gpa, args);
+    const args: Result = try zig_clap.parse(gpa, argv_list.items);
+    defer zig_clap.deinit(gpa, args);
 
     std.debug.print("verbose = {}\n", .{args.verbose});
     switch (args.command) {
