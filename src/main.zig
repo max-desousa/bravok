@@ -1,7 +1,7 @@
 const std = @import("std");
 const zig_clap = @import("zig_clap");
 
-// Schema files live next to this source file.
+// Schema files live in args/ next to this source file.
 //
 // args/                         -v
 //   add/                        -f files, -o outputs, -b
@@ -15,8 +15,7 @@ fn embed(comptime path: []const u8) []const u8 {
     return @embedFile(path);
 }
 
-const command_root = "args/";
-const Result = zig_clap.commandType(embed, command_root);
+const Result = zig_clap.commandType(embed);
 
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
@@ -30,13 +29,9 @@ pub fn main(init: std.process.Init) !void {
     defer iterator.deinit();
     while (iterator.next()) |arg| try argv_list.append(gpa, arg);
 
-    var level: []const u8 = command_root;
-    const args = zig_clap.parseCommands(embed, command_root, gpa, argv_list.items, &level) catch |err| {
-        const program = if (argv_list.items.len == 0) "" else argv_list.items[0];
-        zig_clap.printCommandHelp(embed, command_root, program, level);
-        std.process.exit(if (err == error.Help) 0 else 1);
-    };
-    defer zig_clap.deinitCommands(embed, command_root, gpa, args);
+    // A usage error prints help and exits. `try` only surfaces out of memory.
+    const args: Result = try zig_clap.parse(embed, gpa, argv_list.items);
+    defer zig_clap.deinit(embed, gpa, args);
 
     std.debug.print("verbose = {}\n", .{args.verbose});
     switch (args.command) {
