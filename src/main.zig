@@ -6,9 +6,9 @@ const zig_clap = @import("zig_clap");
 // desc.txt is optional prose for that command's help page.
 //
 // args.csv                      -v
-// sub.csv                       add, serve, remote
+// sub.csv                       add, serve, remote (optional; null is the parent)
 // desc.txt
-// add/                          -f files, -v version, -o outputs, -b
+// add/                          -f files, -v version, -p patch, -o outputs, -b
 // serve/                        -p port, -o log
 // remote/                       --name
 //   list/                       --only
@@ -34,10 +34,11 @@ pub fn main(init: std.process.Init) !void {
     defer zig_clap.deinit(gpa, args);
 
     std.debug.print("verbose = {}\n", .{args.verbose});
-    switch (args.command) {
+    if (args.command) |command| switch (command) {
         .add => |add| {
             std.debug.print("command = add\n", .{});
             std.debug.print("version = {s}\n", .{add.version});
+            std.debug.print("patch = {d}\n", .{add.patch});
             std.debug.print("backup = {}\n", .{add.backup});
             if (add.output) |paths| {
                 for (paths) |path| std.debug.print("output = {s}\n", .{path});
@@ -52,7 +53,7 @@ pub fn main(init: std.process.Init) !void {
         .remote => |remote| {
             std.debug.print("command = remote\n", .{});
             std.debug.print("name = {s}\n", .{remote.name});
-            switch (remote.command) {
+            if (remote.command) |remote_command| switch (remote_command) {
                 .list => |list| {
                     std.debug.print("remote = list\n", .{});
                     if (list.only) |name| std.debug.print("only = {s}\n", .{name});
@@ -60,7 +61,7 @@ pub fn main(init: std.process.Init) !void {
                 .sync => |sync| {
                     std.debug.print("remote = sync\n", .{});
                     std.debug.print("force = {}\n", .{sync.force});
-                    switch (sync.command) {
+                    if (sync.command) |sync_command| switch (sync_command) {
                         .push => |push| {
                             std.debug.print("sync = push\n", .{});
                             std.debug.print("tags = {}\n", .{push.tags});
@@ -70,9 +71,9 @@ pub fn main(init: std.process.Init) !void {
                             std.debug.print("sync = pull\n", .{});
                             std.debug.print("branch = {s}\n", .{pull.branch});
                         },
-                    }
+                    } else std.debug.print("sync command = null\n", .{});
                 },
-            }
+            } else std.debug.print("remote command = null\n", .{});
         },
-    }
+    } else std.debug.print("command = null\n", .{});
 }

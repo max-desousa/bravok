@@ -866,7 +866,8 @@ fn programName(program: []const u8) []const u8 {
 }
 
 /// `words` is the command path already taken (`remote sync`). `suffix` is
-/// this level's required options, `[options]`, and `<command>` or `[command]`.
+/// this level's required options, `[options]`, and `[command]` when this
+/// level has subcommands.
 fn printUsageLine(name: []const u8, comptime words: []const u8, comptime suffix: []const u8) void {
     if (words.len == 0 and suffix.len == 0) {
         std.debug.print("  {s}\n", .{name});
@@ -941,7 +942,6 @@ const command_root = "args/";
 pub const SubDef = struct {
     long: []const u8,
     path: []const u8,
-    is_default: bool,
     help: []const u8,
     field_name: []const u8,
 };
@@ -962,7 +962,6 @@ fn parseSubLine(comptime line: []const u8) SubDef {
     var index: usize = 0;
     const long = readField(line, &index);
     const path_cell = readField(line, &index);
-    const default_cell = readField(line, &index);
     const help = helpText(line, index);
 
     if (long.len == 0) @compileError("subcommand needs a long name: " ++ line);
@@ -970,17 +969,9 @@ fn parseSubLine(comptime line: []const u8) SubDef {
     const segment = if (path_cell.len == 0) long else path_cell;
     validateSegment(segment);
 
-    const is_default = if (default_cell.len == 0)
-        false
-    else if (std.mem.eql(u8, default_cell, "default"))
-        true
-    else
-        @compileError("subcommand default must be blank or 'default': " ++ default_cell);
-
     return .{
         .long = long,
         .path = segment,
-        .is_default = is_default,
         .help = help,
         .field_name = fieldNameFrom(long),
     };
@@ -994,12 +985,10 @@ fn rejectDuplicateSub(comptime prev: []const SubDef, comptime sub: SubDef) void 
             @compileError("duplicate subcommand: " ++ sub.long);
         if (std.mem.eql(u8, old.path, sub.path))
             @compileError("duplicate subcommand path: " ++ sub.path);
-        if (old.is_default and sub.is_default)
-            @compileError("only one subcommand can be the default");
     }
 }
 
-/// Parse a `sub.csv`. Columns: `long,path,default,help`.
+/// Parse a `sub.csv`. Columns: `long,path,help`.
 /// The first row is skipped when it starts with `long,path,`.
 pub fn parseSubCsv(comptime csv: []const u8) []const SubDef {
     const result = comptime blk: {
@@ -1084,8 +1073,7 @@ fn commandPathFrom(
 
 fn commandSuffix(comptime subs: []const SubDef) []const u8 {
     if (subs.len == 0) return "";
-    for (subs) |sub| if (sub.is_default) return "[command]";
-    return "<command>";
+    return "[command]";
 }
 
 fn levelUsage(comptime defs: []const ArgDef, comptime subs: []const SubDef) []const u8 {
@@ -1097,20 +1085,6 @@ fn levelUsage(comptime defs: []const ArgDef, comptime subs: []const SubDef) []co
         break :blk base ++ " " ++ extra;
     };
     return joined;
-}
-
-fn subcommandList(comptime subs: []const SubDef) []const u8 {
-    var text: []const u8 = subs[0].long;
-    for (subs[1..]) |sub| text = text ++ ", " ++ sub.long;
-    return text;
-}
-
-fn defaultSubIndex(comptime subs: []const SubDef) ?usize {
-    comptime var index: usize = 0;
-    inline while (index < subs.len) : (index += 1) {
-        if (subs[index].is_default) return index;
-    }
-    return null;
 }
 
 fn makeCommandUnion(
@@ -1131,16 +1105,7 @@ fn makeCommandUnion(
     return @Union(.auto, Tag, &names, &types, &attrs);
 }
 
-fn blankCommand(comptime Command: type, comptime field_name: []const u8) Command {
-    const info = @typeInfo(Command).@"union";
-    inline for (info.field_names, info.field_types) |name, Child| {
-        if (comptime std.mem.eql(u8, name, field_name))
-            return @unionInit(Command, field_name, Child{});
-    }
-    @compileError("missing command field " ++ field_name);
-}
-
-fn makeLevelStruct(comptime defs: []const ArgDef, comptime Command: type, comptime placeholder: Command) type {
+fn makeLevelStruct(comptime defs: []const ArgDef, comptime Command: type) type {
     for (defs) |def| {
         if (std.mem.eql(u8, def.field_name, "command"))
             @compileError("option name 'command' is reserved when a level has subcommands");
@@ -1160,10 +1125,10 @@ fn makeLevelStruct(comptime defs: []const ArgDef, comptime Command: type, compti
         };
     }
     field_names[defs.len] = "command";
-    field_types[defs.len] = Command;
+    field_types[defs.len] = ?Command;
     field_attrs[defs.len] = .{
-        .default_value_ptr = defaultPtr(placeholder),
-        .@"align" = @alignOf(Command),
+        .default_value_ptr = defaultPtr(@as(?Command, null)),
+        .@"align" = @alignOf(?Command),
     };
     return @Struct(.auto, null, &field_names, &field_types, &field_attrs);
 }
@@ -1180,7 +1145,7 @@ fn commandTypeDepth(comptime embed: anytype, comptime dir: []const u8, comptime 
     const subs = levelSubs(embed, dir);
     if (subs.len == 0) return makeResultType(defs);
     const Command = makeCommandUnion(embed, dir, subs, depth);
-    return makeLevelStruct(defs, Command, blankCommand(Command, subs[0].field_name));
+    return makeLevelStruct(defs, Command);
 }
 
 /// Result type for the schema `embed` loads.
@@ -1191,8 +1156,8 @@ fn commandTypeDepth(comptime embed: anytype, comptime dir: []const u8, comptime 
 /// row's `path` cell is the child directory; a blank cell uses the long name.
 /// `add` with path `a`, then `recursive` with path `r`, loads
 /// `args/a/r/args.csv` and `args/a/r/sub.csv`. An empty `sub.csv` is a leaf
-/// and must still exist. The result has a `command` union when that level
-/// lists any commands.
+/// and must still exist. A level with commands has `command: ?Union`. Null
+/// means the word was omitted, so this level is the parent process.
 pub fn commandType(comptime embed: anytype) type {
     return commandTypeDepth(embed, command_root, 1);
 }
@@ -1237,7 +1202,8 @@ fn parseLevel(
                 errdefer deinitLevel(embed, child_dir, depth + 1, allocator, child);
                 try finishMultis(defs, allocator, &result, &buckets, &seen);
                 errdefer deinitArgs(defs, allocator, result);
-                result.command = @unionInit(@TypeOf(result.command), sub.field_name, child);
+                const Command = @typeInfo(@TypeOf(result.command)).optional.child;
+                result.command = @unionInit(Command, sub.field_name, child);
             }
         }
         return result;
@@ -1245,29 +1211,8 @@ fn parseLevel(
 
     try finishMultis(defs, allocator, &result, &buckets, &seen);
     errdefer deinitArgs(defs, allocator, result);
-    if (subs.len == 0) return result;
-
-    const fallback: ?usize = comptime defaultSubIndex(subs);
-    if (fallback == null) {
-        const list = comptime subcommandList(subs);
-        diagnostic("missing subcommand: {s}\n", .{list});
-        return error.MissingArgument;
-    }
-
-    inline for (subs, 0..) |sub, k| {
-        if (fallback.? == k) {
-            const child = try parseLevel(
-                embed,
-                comptime childDir(dir, sub),
-                depth + 1,
-                allocator,
-                argv,
-                scan.next,
-                level_dir,
-            );
-            result.command = @unionInit(@TypeOf(result.command), sub.field_name, child);
-        }
-    }
+    if (comptime subs.len == 0) return result;
+    result.command = null;
     return result;
 }
 
@@ -1275,7 +1220,8 @@ fn parseLevel(
 ///
 /// Options before the command word belong to that folder's `args.csv`. The
 /// word selects a row of `sub.csv`, and the rest of `argv` belongs to the
-/// child. `-h` and `--help` are `error.Help` for the level being parsed.
+/// child. Omitting the word leaves `command` null, which is the parent
+/// process. `-h` and `--help` are `error.Help` for the level being parsed.
 ///
 /// Any error other than `error.OutOfMemory` prints that level's help and
 /// exits the process (`0` for help, `1` otherwise). Tests receive the error
@@ -1316,8 +1262,9 @@ fn deinitLevel(
     const defs = comptime levelDefs(embed, dir);
     deinitArgs(defs, allocator, result);
     const subs = comptime levelSubs(embed, dir);
-    if (subs.len == 0) return;
-    switch (result.command) {
+    if (comptime subs.len == 0) return;
+    const command = result.command orelse return;
+    switch (command) {
         inline else => |child, tag| {
             inline for (subs) |sub| {
                 if (comptime std.mem.eql(u8, sub.field_name, @tagName(tag))) {
@@ -1345,8 +1292,7 @@ fn printCommandList(comptime subs: []const SubDef) void {
     std.debug.print("\nCommands\n\n", .{});
     std.debug.print(row, .{ "command", "description" });
     inline for (subs) |sub| {
-        const desc = if (comptime sub.is_default) sub.help ++ " (default)" else sub.help;
-        std.debug.print(row, .{ sub.long, desc });
+        std.debug.print(row, .{ sub.long, sub.help });
     }
 }
 
@@ -1753,12 +1699,13 @@ test "demo command tree parses three levels" {
         openCommands(exampleEmbed, allocator, &.{ "prog", "add", "-f", "a.txt" }, &level),
     );
 
-    const added = try openCommands(exampleEmbed, allocator, &.{ "prog", "add", "-bf", "a.txt", "-v", "1" }, &level);
+    const added = try openCommands(exampleEmbed, allocator, &.{ "prog", "add", "-bf", "a.txt", "-v", "1", "-p", "3" }, &level);
     defer deinit(exampleEmbed, allocator, added);
-    switch (added.command) {
+    switch (added.command orelse return error.TestUnexpectedResult) {
         .add => |add| {
             try std.testing.expectEqual(true, add.backup);
             try std.testing.expectEqualStrings("1", add.version);
+            try std.testing.expectEqual(@as(u8, 3), add.patch);
             try std.testing.expectEqualStrings("a.txt", add.file[0]);
         },
         else => return error.TestUnexpectedResult,
@@ -1766,8 +1713,23 @@ test "demo command tree parses three levels" {
 
     const served = try openCommands(exampleEmbed, allocator, &.{ "prog", "serve", "-p", "9" }, &level);
     defer deinit(exampleEmbed, allocator, served);
-    switch (served.command) {
+    switch (served.command orelse return error.TestUnexpectedResult) {
         .serve => |serve| try std.testing.expectEqual(@as(u16, 9), serve.port),
+        else => return error.TestUnexpectedResult,
+    }
+
+    const parent = try openCommands(exampleEmbed, allocator, &.{"prog"}, &level);
+    defer deinit(exampleEmbed, allocator, parent);
+    try std.testing.expect(parent.command == null);
+    try std.testing.expectEqual(false, parent.verbose);
+
+    const remote_only = try openCommands(exampleEmbed, allocator, &.{ "prog", "remote" }, &level);
+    defer deinit(exampleEmbed, allocator, remote_only);
+    switch (remote_only.command orelse return error.TestUnexpectedResult) {
+        .remote => |remote| {
+            try std.testing.expect(remote.command == null);
+            try std.testing.expectEqualStrings("origin", remote.name);
+        },
         else => return error.TestUnexpectedResult,
     }
 
@@ -1776,13 +1738,13 @@ test "demo command tree parses three levels" {
     }, &level);
     defer deinit(exampleEmbed, allocator, args);
     try std.testing.expectEqual(true, args.verbose);
-    switch (args.command) {
+    switch (args.command orelse return error.TestUnexpectedResult) {
         .remote => |remote| {
             try std.testing.expectEqualStrings("upstream", remote.name);
-            switch (remote.command) {
+            switch (remote.command orelse return error.TestUnexpectedResult) {
                 .sync => |sync| {
                     try std.testing.expectEqual(true, sync.force);
-                    switch (sync.command) {
+                    switch (sync.command orelse return error.TestUnexpectedResult) {
                         .push => |push| {
                             try std.testing.expectEqual(true, push.tags);
                             try std.testing.expectEqual(@as(usize, 2), push.file.len);
@@ -1801,9 +1763,9 @@ test "demo command tree parses three levels" {
 
     const pulled = try openCommands(exampleEmbed, allocator, &.{ "prog", "remote", "sync", "pull" }, &level);
     defer deinit(exampleEmbed, allocator, pulled);
-    switch (pulled.command) {
-        .remote => |remote| switch (remote.command) {
-            .sync => |sync| switch (sync.command) {
+    switch (pulled.command orelse return error.TestUnexpectedResult) {
+        .remote => |remote| switch (remote.command orelse return error.TestUnexpectedResult) {
+            .sync => |sync| switch (sync.command orelse return error.TestUnexpectedResult) {
                 .pull => |pull| try std.testing.expectEqualStrings("main", pull.branch),
                 else => return error.TestUnexpectedResult,
             },
@@ -1815,16 +1777,15 @@ test "demo command tree parses three levels" {
 
 test "sub.csv path mask defaults to the long name" {
     const subs = comptime parseSubCsv(
-        \\long,path,default,help
-        \\add,a,,Add a file
-        \\build,,default,"Compile, please"
+        \\long,path,help
+        \\add,a,Add a file
+        \\build,,"Compile, please"
     );
     try std.testing.expectEqual(@as(usize, 2), subs.len);
     try std.testing.expectEqualStrings("add", subs[0].long);
     try std.testing.expectEqualStrings("a", subs[0].path);
-    try std.testing.expect(!subs[0].is_default);
+    try std.testing.expectEqualStrings("build", subs[1].long);
     try std.testing.expectEqualStrings("build", subs[1].path);
-    try std.testing.expect(subs[1].is_default);
     try std.testing.expectEqualStrings("Compile, please", subs[1].help);
 }
 
@@ -1836,22 +1797,22 @@ fn treeEmbed(comptime path: []const u8) []const u8 {
     if (std.mem.eql(u8, path, "args/args.csv"))
         return "v,verbose,bool,0,false,Verbose\nf,file,[]const u8,+,,Files\n";
     if (std.mem.eql(u8, path, "args/sub.csv"))
-        return "long,path,default,help\nadd,a,,Add a file\n";
+        return "long,path,help\nadd,a,Add a file\n";
     if (std.mem.eql(u8, path, "args/a/args.csv"))
         return "n,name,[]const u8,1,item,Name\n";
     if (std.mem.eql(u8, path, "args/a/sub.csv"))
-        return "long,path,default,help\nrecursive,r,,Go deeper\n";
+        return "long,path,help\nrecursive,r,Go deeper\n";
     if (std.mem.eql(u8, path, "args/a/r/args.csv"))
         return "t,times,u8,1,1,Times\n";
     if (std.mem.eql(u8, path, "args/a/r/sub.csv"))
-        return "long,path,default,help\n";
+        return "long,path,help\n";
     @compileError("no schema file: " ++ path);
 }
 
 test "help for a masked command names that level" {
     printCommandHelp(treeEmbed, "tool", "args/");
     printCommandHelp(treeEmbed, "tool", "args/a/r/");
-    printCommandHelp(defaultEmbed, "tool", "args/");
+    printCommandHelp(blankPathEmbed, "tool", "args/");
 }
 
 test "desc.txt is the command's help prose" {
@@ -1869,7 +1830,7 @@ test "usage lines name the command path" {
         levelDefs(exampleEmbed, "args/"),
         levelSubs(exampleEmbed, "args/"),
     ));
-    try std.testing.expectEqualStrings("-f <text...> -v <text> [options]", levelUsage(
+    try std.testing.expectEqualStrings("-f <text...> -v <text> -p <u8> [options]", levelUsage(
         levelDefs(exampleEmbed, "args/add/"),
         levelSubs(exampleEmbed, "args/add/"),
     ));
@@ -1877,11 +1838,11 @@ test "usage lines name the command path" {
         levelDefs(exampleEmbed, "args/serve/"),
         levelSubs(exampleEmbed, "args/serve/"),
     ));
-    try std.testing.expectEqualStrings("[options] <command>", levelUsage(
+    try std.testing.expectEqualStrings("[options] [command]", levelUsage(
         levelDefs(exampleEmbed, "args/remote/"),
         levelSubs(exampleEmbed, "args/remote/"),
     ));
-    try std.testing.expectEqualStrings("[options] <command>", levelUsage(
+    try std.testing.expectEqualStrings("[options] [command]", levelUsage(
         levelDefs(exampleEmbed, "args/remote/sync/"),
         levelSubs(exampleEmbed, "args/remote/sync/"),
     ));
@@ -1896,18 +1857,18 @@ test "usage lines name the command path" {
 
     try std.testing.expectEqualStrings("add", commandPath(treeEmbed, "args/a/"));
     try std.testing.expectEqualStrings("add recursive", commandPath(treeEmbed, "args/a/r/"));
-    try std.testing.expectEqualStrings("-f <text...> [options] <command>", levelUsage(
+    try std.testing.expectEqualStrings("-f <text...> [options] [command]", levelUsage(
         levelDefs(treeEmbed, "args/"),
         levelSubs(treeEmbed, "args/"),
     ));
-    try std.testing.expectEqualStrings("[options] <command>", levelUsage(
+    try std.testing.expectEqualStrings("[options] [command]", levelUsage(
         levelDefs(treeEmbed, "args/a/"),
         levelSubs(treeEmbed, "args/a/"),
     ));
-    try std.testing.expectEqualStrings("build", commandPath(defaultEmbed, "args/build/"));
+    try std.testing.expectEqualStrings("build", commandPath(blankPathEmbed, "args/build/"));
     try std.testing.expectEqualStrings("[options] [command]", levelUsage(
-        levelDefs(defaultEmbed, "args/"),
-        levelSubs(defaultEmbed, "args/"),
+        levelDefs(blankPathEmbed, "args/"),
+        levelSubs(blankPathEmbed, "args/"),
     ));
 }
 
@@ -1925,10 +1886,10 @@ test "masked directories parse three levels" {
     try std.testing.expectEqual(@as(usize, 2), args.file.len);
     try std.testing.expectEqualStrings("in.txt", args.file[0]);
     try std.testing.expectEqualStrings("extra.txt", args.file[1]);
-    switch (args.command) {
+    switch (args.command orelse return error.TestUnexpectedResult) {
         .add => |add| {
             try std.testing.expectEqualStrings("item", add.name);
-            switch (add.command) {
+            switch (add.command orelse return error.TestUnexpectedResult) {
                 .recursive => |recursive| {
                     try std.testing.expectEqual(@as(u8, 4), recursive.times);
                 },
@@ -1953,22 +1914,37 @@ test "a multi option stops before the subcommand" {
     try std.testing.expectEqual(@as(usize, 2), args.file.len);
     try std.testing.expectEqualStrings("in.txt", args.file[0]);
     try std.testing.expectEqualStrings("extra.txt", args.file[1]);
-    switch (args.command) {
+    switch (args.command orelse return error.TestUnexpectedResult) {
         .add => |add| try std.testing.expectEqualStrings("item", add.name),
     }
 }
 
-test "missing and unknown subcommands remember the level" {
+test "an omitted command is null" {
     const allocator = std.testing.allocator;
     var level: []const u8 = "";
-    try std.testing.expectError(error.MissingArgument, openCommands(treeEmbed, allocator, &.{ "prog", "-f", "in.txt" }, &level));
+
+    try std.testing.expectError(error.MissingArgument, openCommands(treeEmbed, allocator, &.{"prog"}, &level));
     try std.testing.expectEqualStrings("args/", level);
 
+    const parent = try openCommands(treeEmbed, allocator, &.{ "prog", "-f", "in.txt" }, &level);
+    defer deinit(treeEmbed, allocator, parent);
+    try std.testing.expect(parent.command == null);
+    try std.testing.expectEqualStrings("in.txt", parent.file[0]);
+    try std.testing.expectEqualStrings("args/", level);
+
+    const nested = try openCommands(treeEmbed, allocator, &.{ "prog", "-f", "in.txt", "add", "-n", "item" }, &level);
+    defer deinit(treeEmbed, allocator, nested);
+    switch (nested.command orelse return error.TestUnexpectedResult) {
+        .add => |add| try std.testing.expect(add.command == null),
+    }
+    try std.testing.expectEqualStrings("args/a/", level);
+}
+
+test "unknown commands and help remember the level" {
+    const allocator = std.testing.allocator;
+    var level: []const u8 = "";
     try std.testing.expectError(error.UnknownCommand, openCommands(treeEmbed, allocator, &.{ "prog", "nope" }, &level));
     try std.testing.expectEqualStrings("args/", level);
-
-    try std.testing.expectError(error.MissingArgument, openCommands(treeEmbed, allocator, &.{ "prog", "-f", "in.txt", "add", "-n", "item" }, &level));
-    try std.testing.expectEqualStrings("args/a/", level);
 
     try std.testing.expectError(error.Help, openCommands(treeEmbed, allocator, &.{ "prog", "-h" }, &level));
     try std.testing.expectEqualStrings("args/", level);
@@ -1981,37 +1957,36 @@ test "missing and unknown subcommands remember the level" {
     try std.testing.expectError(error.Help, parse(treeEmbed, allocator, &.{ "prog", "add", "-h" }));
 }
 
-fn defaultEmbed(comptime path: []const u8) []const u8 {
+fn blankPathEmbed(comptime path: []const u8) []const u8 {
     if (std.mem.endsWith(u8, path, "desc.txt")) return "";
     if (std.mem.eql(u8, path, "args/args.csv"))
         return "v,verbose,bool,0,false,Verbose\n";
     if (std.mem.eql(u8, path, "args/sub.csv"))
-        return "long,path,default,help\nbuild,,default,Compile\n";
+        return "long,path,help\nbuild,,Compile\n";
     if (std.mem.eql(u8, path, "args/build/args.csv"))
         return "n,name,[]const u8,1,app,Name\n";
     if (std.mem.eql(u8, path, "args/build/sub.csv"))
-        return "long,path,default,help\n";
+        return "long,path,help\n";
     @compileError("no schema file: " ++ path);
 }
 
-test "a blank path uses the long name and default selects it" {
+test "a blank path uses the long name" {
     const allocator = std.testing.allocator;
     var level: []const u8 = "";
-    const omitted = try openCommands(defaultEmbed, allocator, &.{"prog"}, &level);
-    defer deinit(defaultEmbed, allocator, omitted);
-    switch (omitted.command) {
-        .build => |build| try std.testing.expectEqualStrings("app", build.name),
-    }
+    const omitted = try openCommands(blankPathEmbed, allocator, &.{"prog"}, &level);
+    defer deinit(blankPathEmbed, allocator, omitted);
+    try std.testing.expect(omitted.command == null);
+    try std.testing.expectEqual(false, omitted.verbose);
 
-    const chosen = try openCommands(defaultEmbed, allocator, &.{ "prog", "build", "-n", "demo" }, &level);
-    defer deinit(defaultEmbed, allocator, chosen);
-    switch (chosen.command) {
+    const chosen = try openCommands(blankPathEmbed, allocator, &.{ "prog", "build", "-n", "demo" }, &level);
+    defer deinit(blankPathEmbed, allocator, chosen);
+    switch (chosen.command orelse return error.TestUnexpectedResult) {
         .build => |build| try std.testing.expectEqualStrings("demo", build.name),
     }
 
-    const via_parse = try parse(defaultEmbed, allocator, &.{"prog"});
-    defer deinit(defaultEmbed, allocator, via_parse);
-    switch (via_parse.command) {
+    const via_parse = try parse(blankPathEmbed, allocator, &.{ "prog", "build" });
+    defer deinit(blankPathEmbed, allocator, via_parse);
+    switch (via_parse.command orelse return error.TestUnexpectedResult) {
         .build => |build| try std.testing.expectEqualStrings("app", build.name),
     }
 }
@@ -2027,8 +2002,8 @@ fn chainEmbed(comptime path: []const u8) []const u8 {
         if (c == '/') slashes += 1;
     }
     if (slashes <= chain_depth)
-        return "long,path,default,help\nn,n,,Down\n";
-    return "long,path,default,help\n";
+        return "long,path,help\nn,n,Down\n";
+    return "long,path,help\n";
 }
 
 fn expectChain(value: anytype, left: usize) !void {
@@ -2037,7 +2012,7 @@ fn expectChain(value: anytype, left: usize) !void {
         try std.testing.expectEqual(true, value.verbose);
         return;
     }
-    switch (value.command) {
+    switch (value.command orelse return error.TestUnexpectedResult) {
         .n => |child| try expectChain(child, left - 1),
     }
 }
