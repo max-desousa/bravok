@@ -3,9 +3,11 @@ const zig_clap = @import("zig_clap");
 
 // The schema directory is the `args` option in build.zig. This demo uses
 // src/args. The folder name is free; these names inside it are fixed.
+// desc.txt is optional prose for that command's help page.
 //
 // args.csv                      -v
 // sub.csv                       add, serve, remote
+// desc.txt
 // add/                          -f files, -o outputs, -b
 // serve/                        -p port, -o log
 // remote/                       --name

@@ -1,0 +1,3 @@
+Transfer with the remote.
+
+--force overrides the remote state. push sends files. pull updates a branch.

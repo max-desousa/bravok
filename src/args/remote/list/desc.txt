@@ -1,0 +1,1 @@
+Show the remotes this program knows about. --only limits the list to one name.

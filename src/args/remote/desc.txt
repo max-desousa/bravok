@@ -1,0 +1,1 @@
+Choose a remote, then list it or transfer with it. The name defaults to origin.

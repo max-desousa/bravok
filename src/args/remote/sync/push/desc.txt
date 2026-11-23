@@ -1,0 +1,1 @@
+Send files to the remote. -f takes one or more paths. -t sends tags as well.

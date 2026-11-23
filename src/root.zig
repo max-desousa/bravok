@@ -1045,6 +1045,13 @@ fn levelSubs(comptime embed: anytype, comptime dir: []const u8) []const SubDef {
     return parseSubCsv(embed(dir ++ "sub.csv"));
 }
 
+/// Prose for this command's help page. `desc.txt` is optional; a missing or
+/// blank file prints nothing. Leading and trailing whitespace is ignored.
+fn levelDesc(comptime embed: anytype, comptime dir: []const u8) []const u8 {
+    const text = comptime std.mem.trim(u8, embed(dir ++ "desc.txt"), " \t\r\n");
+    return text;
+}
+
 /// Command words from `args/` to `dir`, joined by spaces. The path mask is
 /// not included: `args/a/r/` for the `add` / `recursive` commands is
 /// `add recursive`.
@@ -1376,7 +1383,12 @@ fn printMatchingHelp(
         std.debug.print("Usage\n", .{});
         printUsageLine(name, words, comptime levelUsage(defs, subs));
         printChildUsageLines(embed, dir, name, words);
-        std.debug.print("\n", .{});
+        const desc = comptime levelDesc(embed, dir);
+        if (comptime desc.len == 0) {
+            std.debug.print("\n", .{});
+        } else {
+            std.debug.print("\n{s}\n\n", .{desc});
+        }
         writeOptionTable(defs);
         printCommandList(subs);
         return true;
@@ -1811,6 +1823,10 @@ test "sub.csv path mask defaults to the long name" {
 }
 
 fn treeEmbed(comptime path: []const u8) []const u8 {
+    if (std.mem.endsWith(u8, path, "desc.txt")) {
+        if (std.mem.eql(u8, path, "args/desc.txt")) return "Add files, then serve or sync them.\n";
+        return "";
+    }
     if (std.mem.eql(u8, path, "args/args.csv"))
         return "v,verbose,bool,0,false,Verbose\nf,file,[]const u8,+,,Files\n";
     if (std.mem.eql(u8, path, "args/sub.csv"))
@@ -1830,6 +1846,13 @@ test "help for a masked command names that level" {
     printCommandHelp(treeEmbed, "tool", "args/");
     printCommandHelp(treeEmbed, "tool", "args/a/r/");
     printCommandHelp(defaultEmbed, "tool", "args/");
+}
+
+test "desc.txt is the command's help prose" {
+    try std.testing.expectEqualStrings("Add files, then serve or sync them.", levelDesc(treeEmbed, "args/"));
+    try std.testing.expectEqualStrings("", levelDesc(treeEmbed, "args/a/"));
+    try std.testing.expect(std.mem.indexOf(u8, levelDesc(exampleEmbed, "args/"), "project files") != null);
+    try std.testing.expect(std.mem.indexOf(u8, levelDesc(exampleEmbed, "args/remote/sync/"), "\n") != null);
 }
 
 test "usage lines name the command path" {
@@ -1953,6 +1976,7 @@ test "missing and unknown subcommands remember the level" {
 }
 
 fn defaultEmbed(comptime path: []const u8) []const u8 {
+    if (std.mem.endsWith(u8, path, "desc.txt")) return "";
     if (std.mem.eql(u8, path, "args/args.csv"))
         return "v,verbose,bool,0,false,Verbose\n";
     if (std.mem.eql(u8, path, "args/sub.csv"))
@@ -1989,6 +2013,7 @@ test "a blank path uses the long name and default selects it" {
 const chain_depth = 32;
 
 fn chainEmbed(comptime path: []const u8) []const u8 {
+    if (std.mem.endsWith(u8, path, "desc.txt")) return "";
     if (std.mem.endsWith(u8, path, "args.csv"))
         return "v,verbose,bool,0,false,Verbose\n";
     var slashes: usize = 0;

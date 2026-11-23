@@ -1,0 +1,1 @@
+Copy files into the project. -f takes every path until the next option. -o names files to write, and -b keeps a backup of anything replaced.

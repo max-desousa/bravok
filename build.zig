@@ -14,7 +14,8 @@ pub fn build(b: *std.Build) void {
     //   exe.root_module.addImport("zig_clap", clap.module("zig_clap"));
     //
     // `src/cli` may be any folder name. Inside it, every directory has
-    // `args.csv` and `sub.csv`. A `sub.csv` row's `path` cell is the child
+    // `args.csv` and `sub.csv`. `desc.txt` is optional prose printed on that
+    // command's help page. A `sub.csv` row's `path` cell is the child
     // directory, and a blank cell uses the long name.
     const args_dir = b.option(
         std.Build.LazyPath,
@@ -146,6 +147,7 @@ fn loadLevel(
     b.dependOnDirectoryContents(level);
     _ = readSchemaFile(b, root_lp, dir, rel_dir, "args.csv", files);
     const sub_bytes = readSchemaFile(b, root_lp, dir, rel_dir, "sub.csv", files);
+    readOptionalFile(b, root_lp, dir, rel_dir, "desc.txt", files);
     const children = childSegments(b.graph.arena, sub_bytes);
     for (children) |segment| {
         const child = if (rel_dir.len == 0)
@@ -175,6 +177,30 @@ fn readSchemaFile(
     const key = std.fmt.allocPrint(b.graph.arena, "args/{s}", .{disk}) catch @panic("OOM");
     files.append(b.allocator, .{ .key = key, .bytes = bytes }) catch @panic("OOM");
     return bytes;
+}
+
+fn readOptionalFile(
+    b: *std.Build,
+    root_lp: std.Build.LazyPath,
+    dir: std.Io.Dir,
+    rel_dir: []const u8,
+    name: []const u8,
+    files: *std.ArrayList(Loaded),
+) void {
+    const disk = if (rel_dir.len == 0)
+        name
+    else
+        std.fmt.allocPrint(b.graph.arena, "{s}/{s}", .{ rel_dir, name }) catch @panic("OOM");
+    const key = std.fmt.allocPrint(b.graph.arena, "args/{s}", .{disk}) catch @panic("OOM");
+    const bytes = dir.readFileAlloc(b.graph.io, disk, b.graph.arena, .limited(1024 * 1024)) catch |err| switch (err) {
+        error.FileNotFound => {
+            files.append(b.allocator, .{ .key = key, .bytes = "" }) catch @panic("OOM");
+            return;
+        },
+        else => std.process.fatal("zig_clap schema {s} could not read {s} ({t})", .{ schemaLabel(root_lp), disk, err }),
+    };
+    b.dependOnFileContents(root_lp.path(b, disk));
+    files.append(b.allocator, .{ .key = key, .bytes = bytes }) catch @panic("OOM");
 }
 
 fn schemaCachePath(b: *std.Build, lp: std.Build.LazyPath) std.Build.Cache.Path {

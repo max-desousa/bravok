@@ -1,0 +1,1 @@
+Update the working tree from the remote. The branch defaults to main.
