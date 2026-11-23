@@ -1,5 +1,5 @@
 const std = @import("std");
-const zig_clap = @import("zig_clap");
+const bravok = @import("bravok");
 
 // The schema directory is the `args` option in build.zig. This demo uses
 // src/args. The folder name is free; these names inside it are fixed.
@@ -15,7 +15,7 @@ const zig_clap = @import("zig_clap");
 //   sync/                       --force
 //     push/                     -f files, -t
 //     pull/                     --branch
-const Result = zig_clap.commandType();
+const Result = bravok.commandType();
 
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
@@ -30,8 +30,8 @@ pub fn main(init: std.process.Init) !void {
     while (iterator.next()) |arg| try argv_list.append(gpa, arg);
 
     // A usage error prints help and exits. `try` only surfaces out of memory.
-    const args: Result = try zig_clap.parse(gpa, argv_list.items);
-    defer zig_clap.deinit(gpa, args);
+    const args: Result = try bravok.parse(gpa, argv_list.items);
+    defer bravok.deinit(gpa, args);
 
     std.debug.print("verbose = {}\n", .{args.verbose});
     if (args.command) |command| switch (command) {

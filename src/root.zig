@@ -1155,9 +1155,11 @@ fn commandTypeDepth(comptime embed: anytype, comptime dir: []const u8, comptime 
 /// `args/sub.csv`, and one pair of files per command directory. A command
 /// row's `path` cell is the child directory; a blank cell uses the long name.
 /// `add` with path `a`, then `recursive` with path `r`, loads
-/// `args/a/r/args.csv` and `args/a/r/sub.csv`. An empty `sub.csv` is a leaf
-/// and must still exist. A level with commands has `command: ?Union`. Null
-/// means the word was omitted, so this level is the parent process.
+/// `args/a/r/args.csv` and `args/a/r/sub.csv`. An empty `args.csv`, including
+/// one supplied when the file is absent, is a command with no options. An
+/// empty `sub.csv` is a leaf with no `command` field. A level with commands
+/// has `command: ?Union`. Null means the word was omitted, so this level is
+/// the parent process.
 pub fn commandType(comptime embed: anytype) type {
     return commandTypeDepth(embed, command_root, 1);
 }
@@ -1372,6 +1374,12 @@ const showcase_defs = parseCsv(
     \\o,output,?[]const u8,*,null,Output files
     \\f,file,[]const u8,+,,One or more input files
 );
+
+test "an empty csv is a command with no options and no children" {
+    try std.testing.expectEqual(@as(usize, 0), parseCsv("").len);
+    try std.testing.expectEqual(@as(usize, 0), parseSubCsv("").len);
+    try std.testing.expectEqual(@as(usize, 0), parseSubCsv("long,path,help\n").len);
+}
 
 test "embedded args.csv is the argument template" {
     try std.testing.expectEqual(@as(usize, 1), example_defs.len);

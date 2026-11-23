@@ -1,8 +1,10 @@
-# zig_clap
+# bravok
 
-`zig_clap` is a command-line parser for Zig. The schema is a directory of CSV files, read at build time. The program asks for the result type, parses `argv`, and frees the lists the parser owns.
+bravok is a portmanteau of bravo and grok. Bravo is the verb for applauding, the clap this kind of parser is named after, and ok is the ending of grok, the model that wrote this project.
 
-A flag, a number, a string, and a list are rows in `args.csv`. A subcommand is a row in `sub.csv` plus a child directory with the same two files. Leaving the command word off makes `command` null, which is the parent process. `-h` prints that level's help and exits.
+`bravok` is a command-line parser for Zig. The schema is a directory of CSV files, read at build time. The program asks for the result type, parses `argv`, and frees the lists the parser owns.
+
+A flag, a number, a string, and a list are rows in `args.csv`. Omit that file when the command has no options. A subcommand is a row in `sub.csv` plus a child directory. Omit `sub.csv` when there are no children. Leaving the command word off makes `command` null, which is the parent process. `-h` prints that level's help and exits.
 
 ```
 src/cli/
@@ -11,13 +13,12 @@ src/cli/
   desc.txt          optional prose for this level's help
   serve/
     args.csv        options that apply after `serve`
-    sub.csv         header only: serve is a leaf
-    desc.txt
+    desc.txt        no sub.csv: serve has no children
 ```
 
 The folder name is yours. `args.csv`, `sub.csv`, and `desc.txt` are the names the build looks up. Copy [`template/`](template/) to start a schema, or read [`src/args/`](src/args/) for a larger demo.
 
-This package targets Zig `0.18.0-dev.1260+833623422` or newer. The version in `build.zig.zon` is `0.0.0`.
+This package targets Zig `0.18.0-dev.1260+833623422` or newer. The version in `build.zig.zon` is `0.0.1`.
 
 ## Contents
 
@@ -40,23 +41,23 @@ This package targets Zig `0.18.0-dev.1260+833623422` or newer. The version in `b
 From the program that will call the parser:
 
 ```sh
-zig fetch --save git+https://example.com/you/zig_clap
+zig fetch --save git+https://example.com/you/bravok
 ```
 
-Use the real git URL. A path on disk works too: `zig fetch --save ../zig_clap`.
+Use the real git URL. A path on disk works too: `zig fetch --save ../bravok`.
 
-In that program's `build.zig`, pass the schema directory. The option name is `args`. Without it, configuring a dependent package stops with `zig_clap needs .args = b.path("path/to/schema")`.
+In that program's `build.zig`, pass the schema directory. The option name is `args`. Without it, configuring a dependent package stops with `bravok needs .args = b.path("path/to/schema")`.
 
 ```zig
-const clap = b.dependency("zig_clap", .{
+const dep = b.dependency("bravok", .{
     .target = target,
     .optimize = optimize,
     .args = b.path("src/cli"),
 });
-exe.root_module.addImport("zig_clap", clap.module("zig_clap"));
+exe.root_module.addImport("bravok", dep.module("bravok"));
 ```
 
-`src/cli` is only an example. Any directory that contains `args.csv` and `sub.csv` is valid. The build reads those files while configuring, and it depends on their contents, so the next `zig build` picks up a CSV edit.
+`src/cli` is only an example. It may contain `args.csv`, `sub.csv`, `desc.txt`, or any subset of those. The build reads the files that are there, and it depends on the directory, so the next `zig build` picks up an edit or a file you add or remove.
 
 This package's own `build.zig` defaults `.args` to `src/args` when it is the root package. That default is the demo. Dependents do not get it.
 
@@ -66,7 +67,7 @@ The calls are `commandType`, `parse`, and `deinit`. This program matches [`templ
 
 ```zig
 const std = @import("std");
-const zig_clap = @import("zig_clap");
+const bravok = @import("bravok");
 
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
@@ -81,8 +82,8 @@ pub fn main(init: std.process.Init) !void {
     while (iterator.next()) |arg| try argv_list.append(gpa, arg);
 
     // A usage error prints help and exits. `try` surfaces out of memory.
-    const args = try zig_clap.parse(gpa, argv_list.items);
-    defer zig_clap.deinit(gpa, args);
+    const args = try bravok.parse(gpa, argv_list.items);
+    defer bravok.deinit(gpa, args);
 
     if (args.verbose) std.debug.print("verbose\n", .{});
     if (args.command) |command| switch (command) {
@@ -112,33 +113,36 @@ With the template schema the fields are:
 
 ## Schema directory
 
-Every command is a directory. The root is the directory you passed as `.args`. Each directory contains:
+Every command is a directory. The root is the directory you passed as `.args`. A directory that a `sub.csv` row names has to exist. The files inside it are all optional:
 
-| File | Required | Role |
-|---|---|---|
-| `args.csv` | yes | Options for this command |
-| `sub.csv` | yes | Child commands. Header only when there are none |
-| `desc.txt` | no | Prose on this command's help page |
+| File | When you omit it |
+|---|---|
+| `args.csv` | This command has no options |
+| `sub.csv` | This command has no children, and the result has no `command` field |
+| `desc.txt` | This command's help has no prose paragraph |
 
-A row in `sub.csv` selects the child directory. The build does not scan the folder for extra directories. A folder that no row names is never read.
+An empty file means the same thing as a missing one. A `sub.csv` that is only the header row is also a leaf. The build does not scan for directories that no row names.
+
+With no `sub.csv`, the result has no `command` field:
+
+```zig
+const args = try bravok.parse(gpa, argv_list.items);
+defer bravok.deinit(gpa, args);
+if (args.verbose) std.debug.print("verbose\n", .{});
+```
 
 ```
 cli/
-  args.csv
-  sub.csv                 serve, and sync whose directory is s/
-  desc.txt
-  serve/
-    args.csv
-    sub.csv               header only
-  s/
-    args.csv              the `sync` command
-    sub.csv
-    push/
-      args.csv
-      sub.csv
+  args.csv                root options. No sub.csv: there is no command field
+  list/                   not read, because no row names it
+  with-children/
+    sub.csv               this command has children and no options of its own
+    serve/
+      args.csv            options, and no further children
+    bare/                 empty directory: a command word with no options
 ```
 
-That tree is three levels if `s/sub.csv` names `push`. The demo under [`src/args/`](src/args/) goes three levels down: `remote`, `sync`, `push` / `pull`.
+The demo under [`src/args/`](src/args/) keeps a `sub.csv` at every level, including the leaves, and goes three levels down: `remote`, `sync`, `push` / `pull`.
 
 ## args.csv
 
@@ -240,11 +244,11 @@ long,path,help
 sync,s,Transfer with the remote
 ```
 
-The user types `sync`. The files are `s/args.csv` and `s/sub.csv`.
+The user types `sync`. The directory is `s/`. Put `args.csv` there if sync has options, and `sub.csv` there if sync has children. Either file can be absent.
 
 `help` is the one line in the parent's Commands list. It is the rest of the row.
 
-A file with only the header is a leaf. The result struct for that command has no `command` field. The file is still required. At most 64 rows. A duplicate word, field, or path is a compile error.
+Omit `sub.csv`, leave it empty, or leave it as the header row, and this command is a leaf. The result struct has no `command` field. At most 64 rows. A duplicate word, field, or path is a compile error.
 
 ### The command value
 
@@ -303,10 +307,10 @@ From the root of the demo schema the usage block looks like this:
 
 ```
 Usage
-  zig_clap [options] [command]
-  zig_clap add -f <text...> -v <text> -p <u8> [options]
-  zig_clap serve [options]
-  zig_clap remote [options] [command]
+  bravok [options] [command]
+  bravok add -f <text...> -v <text> -p <u8> [options]
+  bravok serve [options]
+  bravok remote [options] [command]
 ```
 
 `[options]` stands for the optional options, including built-in help. Required options are written out. `[command]` means the word may be omitted.

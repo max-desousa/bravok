@@ -1,5 +1,5 @@
-# Leaf. No rows means `serve` has no `command` field.
-# To go one level down, add a row here and create that directory with
-# args.csv and sub.csv inside it. A child of serve would be typed at
-# `serve.command`, which is null when the extra word is left off.
+# Optional. Delete this file and `serve` is still a leaf: no `command` field.
+# To go one level down, add a row and create that directory. A child is
+# `serve.command`, which is null when the extra word is left off. The child
+# needs args.csv only when it has options.
 long,path,help
