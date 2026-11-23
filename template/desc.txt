@@ -1,0 +1,4 @@
+Run the parent command.
+
+No further word leaves the command empty and runs this mode. Flags before the command word belong here. Replace this file with the description of that mode.
+

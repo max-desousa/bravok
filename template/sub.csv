@@ -1,0 +1,36 @@
+# Subcommands of this command. One row is one child directory.
+#
+# Columns, in order:
+#   long, path, help
+#
+# long
+#   The word the user types. It cannot start with `-`. `-` in the name
+#   becomes `_` in the union tag, the same way option names become fields.
+# path
+#   The child directory, one segment. Blank uses `long`, so a row `serve,,...`
+#   reads `serve/args.csv` and `serve/sub.csv`.
+#   A mask such as `a` reads `a/` while the user still types the long name.
+#   The segment cannot be `.` or `..`, cannot contain `/`, `\`, or NUL, and
+#   is at most 255 bytes. The full schema path is at most 4096 bytes.
+#   Masks exist so a deep tree can use short directory names.
+# help
+#   The rest of the line. Shown in this command's help, in the Commands list.
+#   This is the one-line description. Longer prose goes in that child's
+#   desc.txt, not here.
+#
+# A header-only file (just the columns row) is a leaf: this command has no
+# children. The file still has to exist.
+#
+# Leaving the command word off stores null in `command`. That is the parent
+# process. There is no default child. An unknown word is an error.
+# Options before the word belong to this file's args.csv. Options after the
+# word belong to the child. A `+` or `*` list stops before a child word.
+#
+# At most 64 commands. Nesting stops at 64 levels. A directory that no row
+# names is never read.
+#
+# To add another level, add a row and create that directory with its own
+# args.csv and sub.csv. Example of a masked path, left commented:
+#   add,a,Add files. The directory is a/, the word is add.
+long,path,help
+serve,,Listen for requests

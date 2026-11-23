@@ -1,0 +1,13 @@
+# Options for the `serve` command. The root args.csv comment is the full
+# column reference. These options are parsed only after the word `serve`.
+#
+# `port` has a default, so it is optional. `output` is `?[]const u8` at
+# arity 1, so the result field is a single optional string, not a list.
+# The same `?[]const u8` at arity `*` would be an optional list.
+#
+# Commented shapes you can paste in:
+#   f,file,[]const u8,+,,Files to read. Required, because + has no items.
+#   q,quiet,bool,0,false,Stay quiet. True means the usual output is off.
+short,long,type,arity,default,help
+p,port,u16,1,8080,Listen port
+o,output,?[]const u8,1,,Log path. Null when omitted

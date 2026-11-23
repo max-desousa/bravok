@@ -1,0 +1,66 @@
+# Options for this command. Copy this directory and point the zig_clap
+# dependency at it with `.args = b.path("...")`.
+#
+# Columns, in order:
+#   short, long, type, arity, default, help
+#
+# short
+#   Empty, or one character. `-v` comes from `v`.
+# long
+#   The `--name`. A blank long is allowed when short is set. `-` in the long
+#   name becomes `_` in the result field, so `dry-run` is `args.dry_run`.
+#   The name must be a Zig identifier after that rewrite. When this file's
+#   directory has subcommands, the name `command` is reserved.
+# type
+#   bool, u8, u16, u32, u64, usize, i32, i64, or []const u8.
+#   A leading `?` makes the value optional: `?[]const u8`, `?u16`.
+# arity
+#   0   flag. The type must be bool. Passing the flag stores true.
+#   1   exactly one value. `--port 8080` and `--port=8080` are the same.
+#       `-p8080` attaches the value to a short option.
+#   +   one or more values. `-f a.txt b.txt` collects every following word
+#       until the next option or subcommand. Passing the flag with no values
+#       is an error. Repeating the flag appends.
+#   *   zero or more values, collected the same way. Passing the flag with no
+#       values stores an empty list and does not use the default list.
+# default
+#   Used when the option is omitted.
+#   Blank, or the word null, on a `?` type stores null. The option is not
+#   required.
+#   A written value on a non-optional type is that default. The option is
+#   not required. Numbers are base 10. Bool words are true, false, 1, and 0.
+#   A blank cell on a non-optional number, bool, or []const u8 of arity 1
+#   is required. Help shows `required`, and omitting it is an error.
+#   A blank cell and a quoted empty cell are the same thing, so a
+#   non-optional string cannot default to "". Use `?[]const u8` and treat
+#   null as empty in the program when that is the behavior you want.
+#   For + and *, the cell is a comma-separated list: a.txt, b.txt
+#   Quote that cell when you need the quotes to hold the commas, as in the
+#   commented rows below. Whitespace around each item is trimmed, and empty
+#   items are dropped. `+` with no items is required. `*` with no items is
+#   an empty list, or null when the list type is optional.
+#   A flag's blank default is false. `true` is legal and useless: passing
+#   the flag also stores true, so the option cannot change the value.
+#   Name the flag for the unusual case ("quiet", "no-backup") and leave the
+#   default false.
+# help
+#   The rest of the line, so commas do not need quotes. Quote the cell, and
+#   double an interior quote (`""`), when you want quote parsing.
+#   `-h` / `--help` is added for you unless this file already uses `h` or
+#   `help`.
+#
+# Lines that are blank or start with `#` are ignored. The header row below
+# is ignored because it starts with `short,`. At most 64 options.
+#
+# More shapes, left commented so this file stays a small working parent:
+#   n,dry-run,bool,0,false,Print the plan without writing
+#   p,port,u16,1,,Port is required because the default cell is blank
+#   p,port,u16,1,8080,Port defaults to 8080
+#   o,output,?[]const u8,1,,Optional path, null when omitted
+#   o,output,?[]const u8,1,null,Same as a blank cell on a ? type
+#   f,file,[]const u8,+,,Required list. -f a.txt b.txt
+#   f,file,[]const u8,+,"a.txt, b.txt",Defaults to those two paths
+#   t,tag,u8,*,"1, 2",Empty when the flag is passed with no numbers
+#   n,name,[]const u8,1,"say ""hi""",Greeting
+short,long,type,arity,default,help
+v,verbose,bool,0,false,Print more detail
