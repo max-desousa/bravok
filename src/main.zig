@@ -8,7 +8,7 @@ const zig_clap = @import("zig_clap");
 // args.csv                      -v
 // sub.csv                       add, serve, remote
 // desc.txt
-// add/                          -f files, -o outputs, -b
+// add/                          -f files, -v version, -o outputs, -b
 // serve/                        -p port, -o log
 // remote/                       --name
 //   list/                       --only
@@ -37,6 +37,7 @@ pub fn main(init: std.process.Init) !void {
     switch (args.command) {
         .add => |add| {
             std.debug.print("command = add\n", .{});
+            std.debug.print("version = {s}\n", .{add.version});
             std.debug.print("backup = {}\n", .{add.backup});
             if (add.output) |paths| {
                 for (paths) |path| std.debug.print("output = {s}\n", .{path});

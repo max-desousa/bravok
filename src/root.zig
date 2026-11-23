@@ -16,13 +16,13 @@ fn diagnostic(comptime fmt: []const u8, args: anytype) void {
 /// more). `+` and `*` take each argument that follows until the next option.
 ///
 /// `default` is used when the option is omitted. On a `?` type, a blank cell
-/// or `null` is null. A non-optional type with a default is not required; a
-/// blank cell on a non-optional number or bool is required. A blank
-/// `[]const u8` is the empty string. For `+` and `*`, `default` is a
-/// comma-separated list (`a.txt,b.txt`); quote that cell when it contains a
-/// comma. A `?` on `+` or `*` makes the list optional: blank or `null` is
-/// null, and each item uses the inner type. `+` with no items is required.
-/// `*` with no items is an empty list, or null when the list is optional.
+/// or `null` is null. A non-optional type with a default is not required. A
+/// blank cell on a non-optional number, bool, or `[]const u8` is required.
+/// For `+` and `*`, `default` is a comma-separated list (`a.txt,b.txt`);
+/// quote that cell when it contains a comma. A `?` on `+` or `*` makes the
+/// list optional: blank or `null` is null, and each item uses the inner type.
+/// `+` with no items is required. `*` with no items is an empty list, or null
+/// when the list is optional.
 /// Help text may contain commas; quote a field to keep a comma inside
 /// it, and double a quote to escape one.
 pub const ArgDef = struct {
@@ -319,12 +319,12 @@ fn listedDefaults(comptime def: ArgDef) []const []const u8 {
 }
 
 /// An option is required when omitting it would leave a non-optional value
-/// without a default. `+` is a count, not a required flag: it is required
-/// only when its default list is empty.
+/// without a default. A blank cell is no default for a number, a bool, or
+/// `[]const u8`. `+` is a count, not a required flag: it is required only
+/// when its default list is empty.
 fn isRequired(comptime def: ArgDef) bool {
     if (def.arity == .flag or def.arity == .zero_or_more or isOptionalType(def)) return false;
     if (def.arity == .one_or_more) return listedDefaults(def).len == 0;
-    if (std.mem.eql(u8, def.type_name, "[]const u8")) return false;
     return def.default_str.len == 0;
 }
 
@@ -800,7 +800,6 @@ fn defaultLabel(comptime def: ArgDef) []const u8 {
     const s = def.default_str;
     if (std.mem.eql(u8, bare, "[]const u8")) {
         if (optional and (s.len == 0 or std.mem.eql(u8, s, "null"))) return "none";
-        if (s.len == 0) return "\"\"";
         return s;
     }
     if (s.len == 0 or std.mem.eql(u8, s, "null")) return "none";
@@ -1628,12 +1627,13 @@ test "help labels show defaults and mark required options" {
     try std.testing.expectEqualStrings("none", defaultLabel(defs[2]));
     try std.testing.expectEqualStrings("-x <i32>", optionLabel(defs[3]));
     try std.testing.expectEqualStrings("-1", defaultLabel(defs[3]));
-    try std.testing.expectEqualStrings("\"\"", defaultLabel(defs[4]));
+    try std.testing.expect(isRequired(defs[4]));
+    try std.testing.expectEqualStrings("required", defaultLabel(defs[4]));
     try std.testing.expectEqualStrings("out.txt", defaultLabel(defs[5]));
     try std.testing.expectEqualStrings("-p, --port <u16>", optionLabel(defs[6]));
     try std.testing.expectEqualStrings("none", defaultLabel(defs[6]));
     try std.testing.expectEqualStrings("true", defaultLabel(defs[7]));
-    try std.testing.expectEqualStrings("-f <text...> --also <text...> [options]", usageSuffix(defs));
+    try std.testing.expectEqualStrings("-e <text> -f <text...> --also <text...> [options]", usageSuffix(defs));
 
     const optional_only = comptime parseCsv("v,verbose,bool,0,false,Loud\n");
     try std.testing.expectEqualStrings("[options]", usageSuffix(optional_only));
@@ -1748,11 +1748,17 @@ test "demo command tree parses three levels" {
     const allocator = std.testing.allocator;
     var level: []const u8 = "";
 
-    const added = try openCommands(exampleEmbed, allocator, &.{ "prog", "add", "-bf", "a.txt" }, &level);
+    try std.testing.expectError(
+        error.MissingArgument,
+        openCommands(exampleEmbed, allocator, &.{ "prog", "add", "-f", "a.txt" }, &level),
+    );
+
+    const added = try openCommands(exampleEmbed, allocator, &.{ "prog", "add", "-bf", "a.txt", "-v", "1" }, &level);
     defer deinit(exampleEmbed, allocator, added);
     switch (added.command) {
         .add => |add| {
             try std.testing.expectEqual(true, add.backup);
+            try std.testing.expectEqualStrings("1", add.version);
             try std.testing.expectEqualStrings("a.txt", add.file[0]);
         },
         else => return error.TestUnexpectedResult,
@@ -1859,11 +1865,11 @@ test "usage lines name the command path" {
     try std.testing.expectEqualStrings("", commandPath(exampleEmbed, "args/"));
     try std.testing.expectEqualStrings("remote sync", commandPath(exampleEmbed, "args/remote/sync/"));
     try std.testing.expectEqualStrings("remote sync push", commandPath(exampleEmbed, "args/remote/sync/push/"));
-    try std.testing.expectEqualStrings("[options] <command>", levelUsage(
+    try std.testing.expectEqualStrings("[options] [command]", levelUsage(
         levelDefs(exampleEmbed, "args/"),
         levelSubs(exampleEmbed, "args/"),
     ));
-    try std.testing.expectEqualStrings("-f <text...> [options]", levelUsage(
+    try std.testing.expectEqualStrings("-f <text...> -v <text> [options]", levelUsage(
         levelDefs(exampleEmbed, "args/add/"),
         levelSubs(exampleEmbed, "args/add/"),
     ));

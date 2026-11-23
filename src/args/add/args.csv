@@ -1,4 +1,6 @@
 short,long,type,arity,default,help
 f,file,[]const u8,+,,Files to add
+v,version,[]const u8,1,,Version to use
+p,patch,u8,1,,Patch number
 o,output,?[]const u8,*,null,Files to write
 b,backup,bool,0,false,Keep a backup of replaced files
