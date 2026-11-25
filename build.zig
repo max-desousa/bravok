@@ -6,12 +6,12 @@ pub fn build(b: *std.Build) void {
 
     // Dependents pass this. The root package defaults to the demo schema.
     //
-    //   const dep = b.dependency("bravok", .{
+    //   const dep = b.dependency("zig_clap", .{
     //       .target = target,
     //       .optimize = optimize,
     //       .args = b.path("src/cli"),
     //   });
-    //   exe.root_module.addImport("bravok", dep.module("bravok"));
+    //   exe.root_module.addImport("zig_clap", dep.module("zig_clap"));
     //
     // `src/cli` may be any folder name. `args.csv` and `sub.csv` are optional
     // in each directory: omit `args.csv` for no options, omit `sub.csv` for
@@ -25,20 +25,20 @@ pub fn build(b: *std.Build) void {
     ) orelse if (b.isRoot())
         b.path("src/args")
     else
-        std.process.fatal("bravok needs .args = b.path(\"path/to/schema\")", .{});
+        std.process.fatal("zig_clap needs .args = b.path(\"path/to/schema\")", .{});
 
     const mod = clapModule(b, target, optimize, args_dir);
 
     if (!b.isRoot()) return;
 
     const exe = b.addExecutable(.{
-        .name = "bravok",
+        .name = "zig_clap",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "bravok", .module = mod },
+                .{ .name = "zig_clap", .module = mod },
             },
         }),
     });
@@ -80,7 +80,7 @@ fn clapModule(
         .target = target,
         .optimize = optimize,
     });
-    return b.addModule("bravok", .{
+    return b.addModule("zig_clap", .{
         .root_source_file = b.path("src/mod.zig"),
         .target = target,
         .optimize = optimize,
@@ -101,7 +101,7 @@ fn schemaSource(b: *std.Build, args_dir: std.Build.LazyPath) []const u8 {
     const io = b.graph.io;
     const root = schemaCachePath(b, args_dir);
     var dir = root.openDir(io, "", .{}) catch |err| {
-        std.process.fatal("cannot open bravok schema directory {s}: {t}", .{ schemaLabel(args_dir), err });
+        std.process.fatal("cannot open zig_clap schema directory {s}: {t}", .{ schemaLabel(args_dir), err });
     };
     defer dir.close(io);
 
@@ -146,7 +146,7 @@ fn loadLevel(
     }
     if (rel_dir.len != 0) {
         var child_dir = dir.openDir(b.graph.io, rel_dir, .{}) catch |err| {
-            std.process.fatal("bravok schema {s} is missing command directory {s} ({t})", .{
+            std.process.fatal("zig_clap schema {s} is missing command directory {s} ({t})", .{
                 schemaLabel(root_lp), rel_dir, err,
             });
         };
@@ -186,7 +186,7 @@ fn readSchemaFile(
             files.append(b.allocator, .{ .key = key, .bytes = "" }) catch @panic("OOM");
             return "";
         },
-        else => std.process.fatal("bravok schema {s} could not read {s} ({t})", .{ schemaLabel(root_lp), disk, err }),
+        else => std.process.fatal("zig_clap schema {s} could not read {s} ({t})", .{ schemaLabel(root_lp), disk, err }),
     };
     b.dependOnFileContents(root_lp.path(b, disk));
     files.append(b.allocator, .{ .key = key, .bytes = bytes }) catch @panic("OOM");
@@ -211,7 +211,7 @@ fn readOptionalFile(
             files.append(b.allocator, .{ .key = key, .bytes = "" }) catch @panic("OOM");
             return;
         },
-        else => std.process.fatal("bravok schema {s} could not read {s} ({t})", .{ schemaLabel(root_lp), disk, err }),
+        else => std.process.fatal("zig_clap schema {s} could not read {s} ({t})", .{ schemaLabel(root_lp), disk, err }),
     };
     b.dependOnFileContents(root_lp.path(b, disk));
     files.append(b.allocator, .{ .key = key, .bytes = bytes }) catch @panic("OOM");

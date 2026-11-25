@@ -1,4 +1,4 @@
-# Options for this command. Copy this directory and point the bravok
+# Options for this command. Copy this directory and point the zig_clap
 # dependency at it with `.args = b.path("...")`.
 # Omit this file when the command has no options. An empty file is the same.
 #

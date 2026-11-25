@@ -1,8 +1,6 @@
-# bravok
+# zig_clap
 
-bravok is a portmanteau of bravo and grok. Bravo is the verb for applauding, the clap this kind of parser is named after, and ok is the ending of grok, the model that wrote this project.
-
-`bravok` is a command-line parser for Zig. The schema is a directory of CSV files, read at build time. The program asks for the result type, parses `argv`, and frees the lists the parser owns.
+`zig_clap` is a command-line parser for Zig. The schema is a directory of CSV files, read at build time. The program asks for the result type, parses `argv`, and frees the lists the parser owns.
 
 A flag, a number, a string, and a list are rows in `args.csv`. Omit that file when the command has no options. A subcommand is a row in `sub.csv` plus a child directory. Omit `sub.csv` when there are no children. Leaving the command word off makes `command` null, which is the parent process. `-h` prints that level's help and exits.
 
@@ -41,20 +39,20 @@ This package targets Zig `0.18.0-dev.1260+833623422` or newer. The version in `b
 From the program that will call the parser:
 
 ```sh
-zig fetch --save git+https://example.com/you/bravok
+zig fetch --save git+https://example.com/you/zig_clap
 ```
 
-Use the real git URL. A path on disk works too: `zig fetch --save ../bravok`.
+Use the real git URL. A path on disk works too: `zig fetch --save ../zig_clap`.
 
-In that program's `build.zig`, pass the schema directory. The option name is `args`. Without it, configuring a dependent package stops with `bravok needs .args = b.path("path/to/schema")`.
+In that program's `build.zig`, pass the schema directory. The option name is `args`. Without it, configuring a dependent package stops with `zig_clap needs .args = b.path("path/to/schema")`.
 
 ```zig
-const dep = b.dependency("bravok", .{
+const dep = b.dependency("zig_clap", .{
     .target = target,
     .optimize = optimize,
     .args = b.path("src/cli"),
 });
-exe.root_module.addImport("bravok", dep.module("bravok"));
+exe.root_module.addImport("zig_clap", dep.module("zig_clap"));
 ```
 
 `src/cli` is only an example. It may contain `args.csv`, `sub.csv`, `desc.txt`, or any subset of those. The build reads the files that are there, and it depends on the directory, so the next `zig build` picks up an edit or a file you add or remove.
@@ -67,7 +65,7 @@ The calls are `commandType`, `parse`, and `deinit`. This program matches [`templ
 
 ```zig
 const std = @import("std");
-const bravok = @import("bravok");
+const zig_clap = @import("zig_clap");
 
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
@@ -82,8 +80,8 @@ pub fn main(init: std.process.Init) !void {
     while (iterator.next()) |arg| try argv_list.append(gpa, arg);
 
     // A usage error prints help and exits. `try` surfaces out of memory.
-    const args = try bravok.parse(gpa, argv_list.items);
-    defer bravok.deinit(gpa, args);
+    const args = try zig_clap.parse(gpa, argv_list.items);
+    defer zig_clap.deinit(gpa, args);
 
     if (args.verbose) std.debug.print("verbose\n", .{});
     if (args.command) |command| switch (command) {
@@ -126,8 +124,8 @@ An empty file means the same thing as a missing one. A `sub.csv` that is only th
 With no `sub.csv`, the result has no `command` field:
 
 ```zig
-const args = try bravok.parse(gpa, argv_list.items);
-defer bravok.deinit(gpa, args);
+const args = try zig_clap.parse(gpa, argv_list.items);
+defer zig_clap.deinit(gpa, args);
 if (args.verbose) std.debug.print("verbose\n", .{});
 ```
 
@@ -307,10 +305,10 @@ From the root of the demo schema the usage block looks like this:
 
 ```
 Usage
-  bravok [options] [command]
-  bravok add -f <text...> -v <text> -p <u8> [options]
-  bravok serve [options]
-  bravok remote [options] [command]
+  zig_clap [options] [command]
+  zig_clap add -f <text...> -v <text> -p <u8> [options]
+  zig_clap serve [options]
+  zig_clap remote [options] [command]
 ```
 
 `[options]` stands for the optional options, including built-in help. Required options are written out. `[command]` means the word may be omitted.
